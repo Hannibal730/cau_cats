@@ -127,13 +127,13 @@ class Model_backbone(nn.Module):
         # 백본의 출력을 프로젝션 레이어에 통과시켜 최종 예측을 생성합니다.
         # 결과 z의 형태: [배치 크기, 변수 수, 예측 길이]
         
-        # # --- 역정규화(Denormalization) ---
-        # # 모델의 출력을 원래 데이터의 스케일로 되돌리는 과정입니다.
-        # z = z * (std[:, :, 0].unsqueeze(2).repeat(1, 1, self.pred_len))
-        # # 정규화 시 사용했던 표준편차(σ)를 다시 곱합니다. z_denorm = z_norm * σ.
-        # # `unsqueeze`와 `repeat`은 텐서의 차원을 예측 길이에 맞게 브로드캐스팅하기 위해 사용됩니다.
-        # z = z + (mean[:, :, 0].unsqueeze(2).repeat(1, 1, self.pred_len))
-        # # 정규화 시 뺐던 평균(μ)을 다시 더합니다. z_final = z_denorm + μ.
+        # --- 역정규화(Denormalization) ---
+        # 모델의 출력을 원래 데이터의 스케일로 되돌리는 과정입니다.
+        z = z * (std[:, :, 0].unsqueeze(2).repeat(1, 1, self.pred_len))
+        # 정규화 시 사용했던 표준편차(σ)를 다시 곱합니다. z_denorm = z_norm * σ.
+        # `unsqueeze`와 `repeat`은 텐서의 차원을 예측 길이에 맞게 브로드캐스팅하기 위해 사용됩니다.
+        z = z + (mean[:, :, 0].unsqueeze(2).repeat(1, 1, self.pred_len))
+        # 정규화 시 뺐던 평균(μ)을 다시 더합니다. z_final = z_denorm + μ.
         
         return z
         # 최종 예측 결과를 반환합니다.
