@@ -11,6 +11,8 @@ import numpy as np
 import argparse
 import logging
 from datetime import datetime
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # CATS 모델 아키텍처 임포트
 from CATS import Model as CATS_Model
@@ -232,7 +234,7 @@ def train(args, model, train_loader, test_loader, device):
             logging.info(f"최고 성능 모델 저장 완료 (F1 Score: {best_f1:.4f}) -> '{model_path}'")
 
 def inference(args, model, test_loader, device):
-    """저장된 모델을 불러와 추론 시 GPU 메모리 사용량을 측정하고, 테스트셋 성능을 평가합니다."""
+    """저장된 모델을 불러와 추론을 수행하고, 필요 시 어텐션 맵을 저장합니다."""
     logging.info("추론 모드를 시작합니다.")
     
     data_dir_name = os.path.basename(os.path.normpath(args.data_dir))
@@ -248,26 +250,43 @@ def inference(args, model, test_loader, device):
         logging.error(f"모델 가중치 로딩 중 오류 발생: {e}")
         return
 
-    model.eval()
-    
-    # 1. GPU 메모리 사용량 측정
-    dummy_input = torch.randn(1, args.in_channels, args.img_size, args.img_size).to(device)
-    
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device)
-    
-    with torch.no_grad():
-        output = model(dummy_input)
-        
-    if torch.cuda.is_available():
-        peak_memory_bytes = torch.cuda.max_memory_allocated(device)
-        peak_memory_mb = peak_memory_bytes / (1024 * 1024)
-        logging.info(f"추론 시 최대 GPU 메모리 사용량: {peak_memory_mb:.2f} MB")
-    else:
-        logging.info("CUDA를 사용할 수 없어 GPU 메모리 사용량을 측정할 수 없습니다.")
+    # 모델 파라미터 수 계산
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"총 학습 가능한 파라미터 수: {num_params:,}")
 
-    # 2. 테스트셋 성능 평가
+    model.eval()
+
+    if args.save_attention_maps:
+        # 어텐션 맵 저장 폴더 생성
+        attention_map_dir = os.path.join("attention_map", data_dir_name)
+        os.makedirs(attention_map_dir, exist_ok=True)
+        logging.info(f"어텐션 맵을 '{attention_map_dir}' 폴더에 저장합니다.")
+
+    with torch.no_grad():
+        for i, (images, labels) in enumerate(test_loader):
+            images = images.to(device)
+            outputs = model(images)
+
+            if args.save_attention_maps:
+                # 어텐션 가중치 가져오기
+                if hasattr(model, 'classifier') and hasattr(model.classifier, 'model') and hasattr(model.classifier.model, 'backbone') and hasattr(model.classifier.model.backbone, 'decoder'):
+                    for layer_idx, layer in enumerate(model.classifier.model.backbone.decoder.layers):
+                        if hasattr(layer, 'attn'):
+                            attn_weights = layer.attn.cpu().numpy()
+                            
+                            # 배치 내 각 샘플에 대해 어텐션 맵 저장
+                            for sample_idx in range(attn_weights.shape[0]):
+                                for head_idx in range(attn_weights.shape[2]):
+                                    plt.figure(figsize=(10, 10))
+                                    sns.heatmap(attn_weights[sample_idx, :, head_idx, :], cmap='viridis')
+                                    plt.title(f'Layer {layer_idx+1}, Head {head_idx+1}')
+                                    plt.xlabel('Sequence Patch Number')
+                                    plt.ylabel('Prediction Patch Number')
+                                    save_path = os.path.join(attention_map_dir, f'sample_{i*args.batch_size + sample_idx}_layer_{layer_idx+1}_head_{head_idx+1}.png')
+                                    plt.savefig(save_path)
+                                    plt.close()
+
+    # 테스트셋 성능 평가
     logging.info("테스트셋에 대한 성능 평가를 시작합니다.")
     evaluate(model, test_loader, device)
 
@@ -289,6 +308,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_heads', type=int, default=4, help='Number of heads for CATS model')
     parser.add_argument('--d_layers', type=int, default=2, help='Number of decoder layers for CATS model')
     parser.add_argument('--patch_size', type=int, default=120, help='Patch size for image encoder')
+    parser.add_argument('--save_attention_maps', action='store_true', help='추론 시 어텐션 맵을 저장할지 여부')
     
     cli_args = parser.parse_args()
     
@@ -366,7 +386,7 @@ if __name__ == '__main__':
         'dec_in': 1, 'd_model': cli_args.emb_dim, 'd_ff': cli_args.emb_dim * 2, 'n_heads': cli_args.n_heads,
         'patch_len': cli_args.patch_len, 'stride': cli_args.patch_len, 'classification': True,
         'dropout': 0.1, 'query_independence': False, 'padding_patch': 'end',
-        'store_attn': False, 'QAM_end': 0.0, 'QAM_start': 0.0, 'features': 'S',
+        'store_attn': cli_args.save_attention_maps, 'QAM_end': 0.5, 'QAM_start': 0.0, 'features': 'S',
         'des': 'Exp', 'itr': 1,
     }
     cats_args = SimpleNamespace(**cats_params)

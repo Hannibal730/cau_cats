@@ -1,0 +1,46 @@
+2025-10-14 02:08:09,300 - INFO - 로깅을 시작합니다.
+2025-10-14 02:08:09,440 - INFO - 데이터 로딩 완료. 훈련 데이터: 1353개, 테스트 데이터: 339개
+2025-10-14 02:08:10,018 - INFO - 훈련 모드를 시작합니다.
+2025-10-14 02:08:54,937 - INFO - Epoch [1/20], Loss: 0.5630, Train Accuracy: 70.36%
+2025-10-14 02:08:59,346 - INFO - Test Accuracy: 74.04% | Precision: 0.7607 | Recall: 0.7455 | F1 Score: 0.7376
+2025-10-14 02:08:59,355 - INFO - 최고 성능 모델 저장 완료 (F1 Score: 0.7376) -> 'checkpoints/tap_new/best_model.pth'
+2025-10-14 02:09:44,727 - INFO - Epoch [2/20], Loss: 0.4920, Train Accuracy: 75.17%
+2025-10-14 02:09:49,180 - INFO - Test Accuracy: 79.35% | Precision: 0.7969 | Recall: 0.7912 | F1 Score: 0.7918
+2025-10-14 02:09:49,190 - INFO - 최고 성능 모델 저장 완료 (F1 Score: 0.7918) -> 'checkpoints/tap_new/best_model.pth'
+2025-10-14 02:10:33,551 - INFO - Epoch [3/20], Loss: 0.4700, Train Accuracy: 78.05%
+2025-10-14 02:10:37,970 - INFO - Test Accuracy: 81.71% | Precision: 0.8169 | Recall: 0.8173 | F1 Score: 0.8170
+2025-10-14 02:10:37,979 - INFO - 최고 성능 모델 저장 완료 (F1 Score: 0.8170) -> 'checkpoints/tap_new/best_model.pth'
+2025-10-14 02:11:22,428 - INFO - Epoch [4/20], Loss: 0.4547, Train Accuracy: 79.08%
+2025-10-14 02:11:26,845 - INFO - Test Accuracy: 77.88% | Precision: 0.7864 | Recall: 0.7817 | F1 Score: 0.7783
+2025-10-14 02:12:11,322 - INFO - Epoch [5/20], Loss: 0.4587, Train Accuracy: 78.49%
+2025-10-14 02:12:15,742 - INFO - Test Accuracy: 79.06% | Precision: 0.7952 | Recall: 0.7929 | F1 Score: 0.7904
+2025-10-14 02:13:00,173 - INFO - Epoch [6/20], Loss: 0.4621, Train Accuracy: 79.16%
+2025-10-14 02:13:04,596 - INFO - Test Accuracy: 77.58% | Precision: 0.7782 | Recall: 0.7737 | F1 Score: 0.7742
+2025-10-14 02:13:49,114 - INFO - Epoch [7/20], Loss: 0.4566, Train Accuracy: 79.75%
+2025-10-14 02:13:53,526 - INFO - Test Accuracy: 79.06% | Precision: 0.7903 | Recall: 0.7906 | F1 Score: 0.7904
+2025-10-14 02:14:38,069 - INFO - Epoch [8/20], Loss: 0.4658, Train Accuracy: 77.97%
+2025-10-14 02:14:42,486 - INFO - Test Accuracy: 79.06% | Precision: 0.7973 | Recall: 0.7874 | F1 Score: 0.7879
+2025-10-14 02:15:26,911 - INFO - Epoch [9/20], Loss: 0.4582, Train Accuracy: 78.27%
+2025-10-14 02:15:31,342 - INFO - Test Accuracy: 78.17% | Precision: 0.7850 | Recall: 0.7837 | F1 Score: 0.7816
+2025-10-14 02:16:15,875 - INFO - Epoch [10/20], Loss: 0.4425, Train Accuracy: 79.53%
+2025-10-14 02:16:20,305 - INFO - Test Accuracy: 79.65% | Precision: 0.7962 | Recall: 0.7965 | F1 Score: 0.7963
+2025-10-14 02:17:04,838 - INFO - Epoch [11/20], Loss: 0.4381, Train Accuracy: 80.64%
+2025-10-14 02:17:09,271 - INFO - Test Accuracy: 77.88% | Precision: 0.7932 | Recall: 0.7829 | F1 Score: 0.7775
+2025-10-14 02:17:53,737 - INFO - Epoch [12/20], Loss: 0.4364, Train Accuracy: 80.04%
+2025-10-14 02:17:58,240 - INFO - Test Accuracy: 79.06% | Precision: 0.7923 | Recall: 0.7920 | F1 Score: 0.7906
+2025-10-14 02:18:42,916 - INFO - Epoch [13/20], Loss: 0.4329, Train Accuracy: 80.34%
+2025-10-14 02:18:47,330 - INFO - Test Accuracy: 77.88% | Precision: 0.7873 | Recall: 0.7751 | F1 Score: 0.7753
+2025-10-14 02:19:31,878 - INFO - Epoch [14/20], Loss: 0.4075, Train Accuracy: 81.89%
+2025-10-14 02:19:36,298 - INFO - Test Accuracy: 79.94% | Precision: 0.8093 | Recall: 0.8027 | F1 Score: 0.7988
+2025-10-14 02:20:20,769 - INFO - Epoch [15/20], Loss: 0.4247, Train Accuracy: 80.71%
+2025-10-14 02:20:25,176 - INFO - Test Accuracy: 79.94% | Precision: 0.8022 | Recall: 0.7973 | F1 Score: 0.7979
+2025-10-14 02:21:09,712 - INFO - Epoch [16/20], Loss: 0.4242, Train Accuracy: 80.64%
+2025-10-14 02:21:14,130 - INFO - Test Accuracy: 70.80% | Precision: 0.7436 | Recall: 0.7149 | F1 Score: 0.7009
+2025-10-14 02:21:58,676 - INFO - Epoch [17/20], Loss: 0.4230, Train Accuracy: 80.41%
+2025-10-14 02:22:03,093 - INFO - Test Accuracy: 75.22% | Precision: 0.7765 | Recall: 0.7462 | F1 Score: 0.7433
+2025-10-14 02:22:47,606 - INFO - Epoch [18/20], Loss: 0.4272, Train Accuracy: 80.19%
+2025-10-14 02:22:52,045 - INFO - Test Accuracy: 79.06% | Precision: 0.7906 | Recall: 0.7910 | F1 Score: 0.7905
+2025-10-14 02:23:36,586 - INFO - Epoch [19/20], Loss: 0.4217, Train Accuracy: 81.08%
+2025-10-14 02:23:40,989 - INFO - Test Accuracy: 77.88% | Precision: 0.7900 | Recall: 0.7747 | F1 Score: 0.7746
+2025-10-14 02:24:25,532 - INFO - Epoch [20/20], Loss: 0.4199, Train Accuracy: 81.82%
+2025-10-14 02:24:29,950 - INFO - Test Accuracy: 80.53% | Precision: 0.8073 | Recall: 0.8068 | F1 Score: 0.8053

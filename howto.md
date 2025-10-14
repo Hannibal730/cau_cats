@@ -16,8 +16,10 @@ if __name__ == '__main__':
     parser.add_argument('--img_size', type=int, default=480, help='입력 이미지 크기')
 
 
-python run_ci.py --mode train --data_dir "./tap_new" --batch_size 8 --epochs 20 --in_channels 3
-python run_ci.py --mode train --data_dir "./Refined_mix" --batch_size 8 --epochs 20 --in_channels 3
+python run_ci.py --mode train --data_dir "./tap_new" --epochs 20 --in_channels 3
+python run_ci.py --mode train --data_dir "./Refined_mix" --epochs 20 --in_channels 3
 
-python run_ci.py --mode inference --data_dir ./tap_new
+python run_ci.py --mode inference --data_dir ./tap_new --save_attention_maps
+python run_ci.py --mode inference --data_dir ./Refined_mix --save_attention_maps
+
 python run_ci.py --mode inference --data_dir ./Refined_mix
