@@ -128,7 +128,7 @@ class XModel(torch.nn.Module):
 
 # ★★★ 3채널(RGB) 채널 독립성 모델 ★★★
 class XModel_ChannelIndependent(torch.nn.Module):
-    """채널 독립성을 구현한 하이브리드 모델입니다."""
+    """각 채널을 이어붙여 처리하는 하이브리드 모델입니다."""
     def __init__(self, encoder, classifier):
         super().__init__()
         self.encoder = encoder # 인코더는 1채널 입력을 받도록 설계되어야 함
@@ -136,19 +136,27 @@ class XModel_ChannelIndependent(torch.nn.Module):
         
     def forward(self, x):
         batch_size = x.shape[0]
+
+        # 1단계: 3채널 이미지를 각 채널별로 분할하고,배치 사이즈를 3배 늘림
         # [B, 3, H, W] -> [B*3, 1, H, W]
+        # 이유: 1채널용 인코더를 공유하여 모든 채널을 효율적으로 한 번에 처리하기 위함
         x_channels = x.view(batch_size * 3, 1, x.shape[2], x.shape[3])
         
-        # [B*3, 1, H, W] -> [B*3, seq_len_single_channel]
+        # 2단계: 레즈넷 기반 인코더로 각 채널별 특징 추출
+        # [B*3, 1, H, W] -> [B*3, seq_len_single]
+        # 이유: 2D 이미지 정보를 1D 시퀀스 정보로 변환
         channel_sequences = self.encoder(x_channels)
         
-        # [B*3, seq_len_single_channel] -> [B, 3 * seq_len_single_channel]
+        # 3단계: 각 채널별 특징 시퀀스를 하나로 결합. 배치 사이즈도 원상복귀
+        # [B*3, seq_len_single] -> [B, 3 * seq_len_single]
+        # 이유: 최종 분류기가 R,G,B 모든 채널 정보를 종합하여 채널 간 관계를 학습하도록 함
         combined_sequence = channel_sequences.view(batch_size, -1)
         
-        # [B, seq_len_single_channel] -> [B, seq_len_single_channel, 1]
+        # 4단계: CATS 입력 및 최종 출력
+        # [B, 3*seq_len_single] -> [B, num_classes]
         final_sequence = combined_sequence.unsqueeze(-1)
-        
         out = self.classifier(final_sequence).squeeze(-1)
+        
         return out
 
 # =============================================================================
@@ -233,7 +241,7 @@ def train(args, model, train_loader, test_loader, device):
             torch.save(model.state_dict(), model_path)
             logging.info(f"최고 성능 모델 저장 완료 (F1 Score: {best_f1:.4f}) -> '{model_path}'")
 
-def inference(args, model, test_loader, device):
+def inference(args, model, test_loader, device, class_names):
     """저장된 모델을 불러와 추론을 수행하고, 필요 시 어텐션 맵을 저장합니다."""
     logging.info("추론 모드를 시작합니다.")
     
@@ -245,48 +253,140 @@ def inference(args, model, test_loader, device):
 
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
-        logging.info(f"'{model_path}'에서 모델 가중치를 성공적으로 불러왔습니다.")
+        logging.info(f"모델 가중치 로딩 완료. '{model_path}'")
     except Exception as e:
         logging.error(f"모델 가중치 로딩 중 오류 발생: {e}")
         return
 
-    # 모델 파라미터 수 계산
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"총 학습 가능한 파라미터 수: {num_params:,}")
+    # --- 파라미터 수 상세 분석 ---
+    def count_params(module):
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+    encoder_params = count_params(model.encoder)
+    classifier_params = count_params(model.classifier)
+    cats_model = model.classifier.model
+    dummy_embedding = cats_model.backbone
+    embedding_params = count_params(dummy_embedding.W_P) + (dummy_embedding.PE.numel() if dummy_embedding.PE.requires_grad else 0) + (dummy_embedding.dummies.numel() if dummy_embedding.dummies.requires_grad else 0)
+    decoder_params = count_params(dummy_embedding.decoder)
+    projection_params = count_params(cats_model.proj)
+    total_params = count_params(model)
+
+    logging.info("===== 모델 파라미터 상세 분석 =====")
+    logging.info(f"- Encoder (Feature Extractor) : {encoder_params:,}")
+    logging.info(f"- Classifier (Transformer)    : {classifier_params:,}")
+    logging.info(f"    - Embedding               : {embedding_params:,}")
+    logging.info(f"    - Decoder Layers          : {decoder_params:,}")
+    logging.info(f"    - Projection Head         : {projection_params:,}")
+    logging.info("-----------------------------------")
+    logging.info(f"총 학습 가능한 파라미터 수      : {total_params:,}")
+    logging.info("===================================")
 
     model.eval()
 
+    # --- GPU 메모리 사용량 측정 ---
+    if torch.cuda.is_available():
+        dummy_input = torch.randn(1, args.in_channels, args.img_size, args.img_size).to(device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(device)
+        with torch.no_grad():
+            _ = model(dummy_input)
+        peak_memory_bytes = torch.cuda.max_memory_allocated(device)
+        peak_memory_mb = peak_memory_bytes / (1024 * 1024)
+        logging.info(f"추론 시 최대 GPU 메모리 사용량: {peak_memory_mb:.2f} MB")
+    else:
+        logging.info("CUDA를 사용할 수 없어 GPU 메모리 사용량을 측정할 수 없습니다.")
+
     if args.save_attention_maps:
-        # 어텐션 맵 저장 폴더 생성
         attention_map_dir = os.path.join("attention_map", data_dir_name)
         os.makedirs(attention_map_dir, exist_ok=True)
         logging.info(f"어텐션 맵을 '{attention_map_dir}' 폴더에 저장합니다.")
+        
+        patch_num_per_channel = (args.img_size // args.patch_size) ** 2
+        if args.in_channels == 3:
+            r_end = patch_num_per_channel
+            g_end = 2 * patch_num_per_channel
+            b_end = 3 * patch_num_per_channel
+            range_text = f"X-axis: R[0-{r_end-1}], G[{r_end}-{g_end-1}], B[{g_end}-{b_end-1}], Padding[{b_end}]"
+        else:
+            range_text = f"X-axis: Features[0-{patch_num_per_channel-1}], Padding[{patch_num_per_channel}]"
 
     with torch.no_grad():
-        for i, (images, labels) in enumerate(test_loader):
+        test_indices = test_loader.dataset.indices
+        original_samples = test_loader.dataset.dataset.samples
+
+        # 원본 이미지를 로드하기 위한 역정규화 transform
+        inv_normalize = transforms.Normalize(
+            mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225] if args.in_channels == 3 else [-0.5/0.5],
+            std=[1/0.229, 1/0.224, 1/0.225] if args.in_channels == 3 else [1/0.5]
+        )
+
+        for batch_idx, (images, labels) in enumerate(test_loader):
             images = images.to(device)
             outputs = model(images)
+            _, predicted_indices = torch.max(outputs.data, 1)
 
             if args.save_attention_maps:
-                # 어텐션 가중치 가져오기
+                all_attns = []
                 if hasattr(model, 'classifier') and hasattr(model.classifier, 'model') and hasattr(model.classifier.model, 'backbone') and hasattr(model.classifier.model.backbone, 'decoder'):
-                    for layer_idx, layer in enumerate(model.classifier.model.backbone.decoder.layers):
+                    for layer in model.classifier.model.backbone.decoder.layers:
                         if hasattr(layer, 'attn'):
-                            attn_weights = layer.attn.cpu().numpy()
-                            
-                            # 배치 내 각 샘플에 대해 어텐션 맵 저장
-                            for sample_idx in range(attn_weights.shape[0]):
-                                for head_idx in range(attn_weights.shape[2]):
-                                    plt.figure(figsize=(10, 10))
-                                    sns.heatmap(attn_weights[sample_idx, :, head_idx, :], cmap='viridis')
-                                    plt.title(f'Layer {layer_idx+1}, Head {head_idx+1}')
-                                    plt.xlabel('Sequence Patch Number')
-                                    plt.ylabel('Prediction Patch Number')
-                                    save_path = os.path.join(attention_map_dir, f'sample_{i*args.batch_size + sample_idx}_layer_{layer_idx+1}_head_{head_idx+1}.png')
-                                    plt.savefig(save_path)
-                                    plt.close()
+                            all_attns.append(layer.attn.cpu().numpy())
+                
+                if not all_attns: continue
 
-    # 테스트셋 성능 평가
+                for sample_in_batch_idx in range(images.shape[0]):
+                    global_sample_idx = batch_idx * args.batch_size + sample_in_batch_idx
+                    original_idx = test_indices[global_sample_idx]
+                    filepath = original_samples[original_idx][0]
+
+                    # 원본 이미지 로드 및 역정규화
+                    original_image_tensor = images[sample_in_batch_idx].cpu()
+                    original_image_tensor = inv_normalize(original_image_tensor)
+                    original_image = transforms.ToPILImage()(original_image_tensor).convert("RGB" if args.in_channels == 3 else "L")
+
+
+                    actual_class = class_names[labels[sample_in_batch_idx]]
+                    predicted_class = class_names[predicted_indices[sample_in_batch_idx]]
+
+                    # GridSpec을 사용하여 원본 이미지와 어텐션 맵 레이아웃 구성
+                    fig = plt.figure(figsize=(args.n_heads * 5, args.d_layers * 2.5 + 2))
+                    gs = fig.add_gridspec(args.d_layers + 1, args.n_heads, height_ratios=[1.5] + [1]*args.d_layers, hspace=0.8, wspace=0.3)
+
+                    # 원본 이미지 표시
+                    ax_orig = fig.add_subplot(gs[0, 0])
+                    ax_orig.imshow(original_image, cmap='gray' if args.in_channels == 1 else None)
+                    ax_orig.set_title("Original Image", fontsize=12)
+                    ax_orig.axis('off')
+                    
+                    title = f"File: {os.path.basename(filepath)} | Actual: {actual_class} | Predicted: {predicted_class}"
+                    full_title = f"{title}\n{range_text}"
+                    fig.suptitle(full_title, fontsize=16, y=1.02)
+
+                    for layer_idx in range(args.d_layers):
+                        for head_idx in range(args.n_heads):
+                            ax = fig.add_subplot(gs[layer_idx + 1, head_idx])
+                            attn_data = all_attns[layer_idx][sample_in_batch_idx, 0, head_idx, :]
+                            
+                            # 컬러바를 히트맵 아래에 별도로 생성
+                            sns.heatmap(attn_data.reshape(1, -1), cmap='viridis', ax=ax, cbar=False)
+                            
+                            # 컬러바를 위한 새로운 축 생성 (히트맵 아래에 위치)
+                            cax = ax.inset_axes([0, -0.5, 1, 0.1]) # [x, y, width, height]
+                            fig.colorbar(ax.collections[0], cax=cax, orientation='horizontal')
+
+                            ax.set_yticklabels([])
+                            ax.set_xlabel('')
+                            ax.set_ylabel('')
+
+                            if layer_idx == 0: # 헤더 제목은 첫 줄에만 표시
+                                ax.set_title(f'Head {head_idx+1}')
+                            if head_idx == 0:
+                                ax.set_ylabel(f'Layer {layer_idx+1}', rotation=90, size='large', labelpad=20)
+
+                    save_path = os.path.join(attention_map_dir, f'sample_{global_sample_idx}.png')
+                    plt.savefig(save_path, bbox_inches='tight')
+                    plt.close(fig)
+
     logging.info("테스트셋에 대한 성능 평가를 시작합니다.")
     evaluate(model, test_loader, device)
 
@@ -305,7 +405,7 @@ if __name__ == '__main__':
     parser.add_argument('--img_size', type=int, default=480, help='입력 이미지 크기')
     parser.add_argument('--patch_len', type=int, default=32, help='Patch length for CATS model')
     parser.add_argument('--emb_dim', type=int, default=24, help='Embedding dimension for CATS model')
-    parser.add_argument('--n_heads', type=int, default=4, help='Number of heads for CATS model')
+    parser.add_argument('--n_heads', type=int, default=3, help='Number of heads for CATS model')
     parser.add_argument('--d_layers', type=int, default=2, help='Number of decoder layers for CATS model')
     parser.add_argument('--patch_size', type=int, default=120, help='Patch size for image encoder')
     parser.add_argument('--save_attention_maps', action='store_true', help='추론 시 어텐션 맵을 저장할지 여부')
@@ -385,10 +485,11 @@ if __name__ == '__main__':
         'seq_len': seq_len, 'pred_len': num_labels, 'd_layers': cli_args.d_layers,
         'dec_in': 1, 'd_model': cli_args.emb_dim, 'd_ff': cli_args.emb_dim * 2, 'n_heads': cli_args.n_heads,
         'patch_len': cli_args.patch_len, 'stride': cli_args.patch_len, 'classification': True,
-        'dropout': 0.1, 'query_independence': False, 'padding_patch': 'end',
+        'dropout': 0.1, 'query_independence': True, 'padding_patch': 'end',
         'store_attn': cli_args.save_attention_maps, 'QAM_end': 0.5, 'QAM_start': 0.0, 'features': 'S',
         'des': 'Exp', 'itr': 1,
     }
+    # query_independence': True는 한 채널에 대한 쿼리를 다른 채널들에도 공유하는 옵션. 하지만 지금은 이미지를 1차원으로 펴서 CATS에 입력하기 때문에 true나 false가 의미없다.
     cats_args = SimpleNamespace(**cats_params)
 
     encoder = PatchConvEncoder(in_channels=encoder_in_channels, img_size=cli_args.img_size, patch_size=cli_args.patch_size, hidden_dim=cli_args.patch_len)
@@ -403,4 +504,4 @@ if __name__ == '__main__':
     if cli_args.mode == 'train':
         train(cli_args, model, train_loader, test_loader, device)
     elif cli_args.mode == 'inference':
-        inference(cli_args, model, test_loader, device)
+        inference(cli_args, model, test_loader, device, base_dataset.classes)
