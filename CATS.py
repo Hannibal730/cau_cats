@@ -56,25 +56,25 @@ class QueryAdaptiveMasking(nn.Module):
 # 입력 데이터를 패치로 나누고, 트랜스포머 기반의 인코더-디코더 구조를 통해 예측을 수행합니다.
 class Model_backbone(nn.Module):
     # 모델 백본의 생성자입니다. 모델의 구조와 하이퍼파라미터를 초기화합니다.
-    def __init__(self, c_in:int, seq_len:int, pred_len:int, patch_len:int=24, stride:int=24, n_layers:int=3, d_model=128, n_heads=16, d_ff:int=256, 
-                 attn_dropout:float=0., dropout:float=0., res_attention:bool=True, independence:bool=False, store_attn:bool=False, QAM_start:float = 0.1, 
+    def __init__(self, c_in:int, seq_len:int, pred_len:int, featured_patch_channel:int=24, stride:int=24, n_layers:int=3, d_model=128, n_heads=16, d_ff:int=256,
+                 attn_dropout:float=0., dropout:float=0., res_attention:bool=True, channel_independence:bool=False, store_attn:bool=False, QAM_start:float = 0.1,
                  QAM_end:float =0.5, padding_patch = None, **kwargs):
         
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
         
         # --- 패치화(Patching) 관련 설정 ---
-        self.patch_len = patch_len
+        self.featured_patch_channel = featured_patch_channel
         # 입력 시계열을 나눌 각 패치의 길이를 저장합니다.
         self.stride = stride
         # 패치를 추출할 때의 보폭(stride)을 저장합니다.
         self.padding_patch = padding_patch
         # 패딩 전략을 저장합니다. `None` 또는 'end(시계열 데이터 맨 뒤에 추가)'가 될 수 있습니다.
         
-        pred_patch_num = (pred_len+patch_len-1)//patch_len
-        # 미래 예측 패치의 개수를 계산합니다. `pred_len`을 `patch_len`으로 올림 나눗셈(ceiling division)하여 구합니다.
-        # (pred_len + patch_len - 1) // patch_len은 math.ceil(pred_len / patch_len)과 동일한 결과를 정수 연산으로 수행합니다.
-        seq_patch_num = int((seq_len - patch_len)/stride + 1)
+        pred_patch_num = (pred_len+self.featured_patch_channel-1)//self.featured_patch_channel
+        # 미래 예측 패치의 개수를 계산합니다. `pred_len`을 `featured_patch_channel`로 올림 나눗셈(ceiling division)하여 구합니다.
+        # (pred_len + featured_patch_channel - 1) // featured_patch_channel은 math.ceil(pred_len / featured_patch_channel)과 동일한 결과를 정수 연산으로 수행합니다.
+        seq_patch_num = int((seq_len - self.featured_patch_channel)/stride + 1)
         # 입력 시계열에서 생성될 과거 패치의 개수를 계산합니다. 컨볼루션 출력 크기 계산과 유사합니다.
         # N_out = floor((N_in - kernel_size) / stride + 1) 공식에 해당합니다.
         
@@ -85,19 +85,19 @@ class Model_backbone(nn.Module):
             seq_patch_num += 1
             # 패딩으로 인해 시퀀스 패치의 수가 하나 증가합니다.
         
-        # --- 백본 모델 초기화 ---
-        self.backbone = Dummy_Embedding(c_in, seq_patch_num=seq_patch_num, patch_len=patch_len, pred_patch_num=pred_patch_num,
+        # --- 백본 모델(임베딩 및 디코더) 초기화 ---
+        self.backbone = Learnable_Query_Embedding(c_in, seq_patch_num=seq_patch_num, featured_patch_channel=self.featured_patch_channel, pred_patch_num=pred_patch_num,
                                 n_layers=n_layers, d_model=d_model, n_heads=n_heads, d_ff=d_ff,
                                 attn_dropout=attn_dropout, dropout=dropout, QAM_start=QAM_start, QAM_end=QAM_end,
-                                res_attention=res_attention, independence = independence, store_attn=store_attn, **kwargs)
-        # `Dummy_Embedding` 클래스를 사용하여 실제 트랜스포머 연산을 수행할 백본을 생성합니다.
+                                res_attention=res_attention, channel_independence = channel_independence, store_attn=store_attn, **kwargs)
+        # `Learnable_Query_Embedding` 클래스를 사용하여 실제 트랜스포머 연산을 수행할 백본을 생성합니다.
 
         self.n_vars = c_in
         # 입력 시계열의 변수(채널) 개수를 저장합니다.
         self.pred_len = pred_len
         # 모델이 예측해야 할 타임스텝의 길이를 저장합니다.
-        self.proj = Projection(d_model, patch_len)
-        # 백본의 출력(`d_model` 차원)을 최종 예측 패치(`patch_len` 차원)로 변환하는 프로젝션 레이어를 생성합니다.
+        self.proj = Projection(d_model, self.featured_patch_channel)
+        # 백본의 출력(`d_model` 차원)을 최종 예측 패치(`featured_patch_channel` 차원)로 변환하는 프로젝션 레이어를 생성합니다.
     
     # 모델 백본의 순전파 로직을 정의합니다.
     def forward(self, z): # 입력 z의 형태: [배치 크기, 입력 다변량 시계열 데이터의 변수 개수, 시퀀스 길이L]
@@ -115,13 +115,13 @@ class Model_backbone(nn.Module):
             # 'end' 패딩이 설정된 경우,
             z = self.padding_patch_layer(z)
             # 정의된 패딩 레이어를 입력에 적용합니다.
-        z = z.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        # `unfold` 함수를 사용하여 시계열을 지정된 `patch_len`과 `stride`에 따라 패치들로 나눕니다.
-        # 결과 z의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, 패치 길이]
+        z = z.unfold(dimension=-1, size=self.featured_patch_channel, step=self.stride)
+        # `unfold` 함수를 사용하여 시계열을 지정된 `featured_patch_channel`과 `stride`에 따라 패치들로 나눕니다.
+        # 결과 z의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, featured_patch_channel]
 
         # --- 모델 순전파 ---
         z = self.backbone(z)
-        # 패치화된 입력을 백본 모델(`Dummy_Embedding`)에 통과시킵니다.
+        # 패치화된 입력을 백본 모델(`Learnable_Query_Embedding`)에 통과시킵니다.
         # 결과 z의 형태: [배치 크기, 변수 수, 예측 패치 수, d_model]
         z = self.proj(z)
         # 백본의 출력을 프로젝션 레이어에 통과시켜 최종 예측을 생성합니다.
@@ -138,38 +138,38 @@ class Model_backbone(nn.Module):
         return z
         # 최종 예측 결과를 반환합니다.
     
-# 입력 패치와 dummy(미래 패치를 예측하기 위해 필요한 학습 가능한 쿼리 파라미터)를 임베딩하고 트랜스포머 디코더를 통해 예측을 수행하는 클래스입니다.
+# 입력 패치와 학습 가능한 쿼리(learnable queries)를 임베딩하고 트랜스포머 디코더를 통해 예측을 수행하는 클래스입니다.
 # 디코더에 입력할 seq_patch와 pred_patch를 생성한다. 이후 CATS 모델의 순전파에서 seq_patch와 pred_patch가 디코더에 입력되며 예측값을 생성한다. 그리고 오차를 계산하고 역전파로 훈련한다.
-# pred_patch의 시작값 이름이 'dummy'인 이유는 이 파라미터가 처음에는 아무 의미 없는 무작위 값(더미 데이터)으로 시작하기 때문이다. 물론 위 훈련 과정을 통해 각 미래 패치를 예측하기 위한 유의미한 질문(쿼리)으로 학습되기 때문입니다.
-class Dummy_Embedding(nn.Module): 
+# 이 파라미터는 처음에는 무작위 값으로 시작하지만, 훈련 과정을 통해 각 미래 패치를 예측하기 위한 유의미한 질문(쿼리)으로 학습되기 때문에 "학습 가능한 쿼리"라고 부릅니다.
+class Learnable_Query_Embedding(nn.Module): 
     # 클래스의 생성자입니다.
-    def __init__(self, c_in, seq_patch_num, patch_len, pred_patch_num, n_layers=3, d_model=128, n_heads=16, QAM_start = 0.1, QAM_end =0.5,
-                 d_ff=256, attn_dropout=0., dropout=0., store_attn=False, res_attention=True, independence = False, **kwargs):
+    def __init__(self, c_in, seq_patch_num, featured_patch_channel, pred_patch_num, n_layers=3, d_model=128, n_heads=16, QAM_start = 0.1, QAM_end =0.5,
+                 d_ff=256, attn_dropout=0., dropout=0., store_attn=False, res_attention=True, channel_independence = False, **kwargs):
              
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
         
         # --- 입력 인코딩 ---
-        self.W_P = nn.Linear(patch_len, d_model)      
-        # 입력 패치(`patch_len` 차원)를 모델의 은닉 상태 차원(`d_model`)으로 변환하는 선형 레이어(가중치 `W_P`)를 정의합니다.
+        self.W_P = nn.Linear(featured_patch_channel, d_model)      
+        # 입력 패치(`featured_patch_channel` 차원)를 모델의 은닉 상태 차원(`d_model`)으로 변환하는 선형 레이어(가중치 `W_P`)를 정의합니다.
         self.dropout = nn.Dropout(dropout)
         # 일반적인 드롭아웃 레이어를 정의합니다.
 
-        # --- 더미 입력(학습 가능한 쿼리) 설정 ---
-        self.independence = independence
+        # --- 학습 가능한 쿼리(Learnable Queries) 설정 ---
+        self.channel_independence = channel_independence
         # 변수(채널)들이 서로 독립적으로 처리될지 여부를 저장합니다.
-        if self.independence:
+        if self.channel_independence:
             # 만약 변수들이 독립적이라면,
-            self.dummies = nn.Parameter(0.5*torch.randn(pred_patch_num, patch_len))
-            # 모든 변수가 공유하는 하나의 더미 입력 셋을 학습 가능한 파라미터(nn.Parameter)로 생성합니다.
+            self.learnable_queries = nn.Parameter(0.5*torch.randn(pred_patch_num, featured_patch_channel))
+            # 모든 변수가 공유하는 하나의 쿼리 셋을 학습 가능한 파라미터(nn.Parameter)로 생성합니다.
             # 더 좁은 범위에 집중시키 위해서 0.5를 곱하여 N(0,0.5^2)를 따르게 만든다.
             # -> 초기 가중치 값이 0근처에 더 집중되게 만듦으로써 초기 가중치가 커서 발생할 문제 방지 (그래디언트 폭주/소실. 활성함수 포화)
-            # 크기는 [예측 패치 수, 패치 길이]입니다.
+            # 크기는 [예측 패치 수, featured_patch_channel]입니다.
         else:
             # 변수들이 서로 종속적이라면,
-            self.dummies = nn.Parameter(0.5*torch.randn(c_in, pred_patch_num, patch_len))
-            # 각 변수별로 별도의 더미 입력 셋을 학습 가능한 파라미터(nn.Parameter)로 생성합니다.
-            # 크기는 [변수 수, 예측 패치 수, 패치 길이]입니다.
+            self.learnable_queries = nn.Parameter(0.5*torch.randn(c_in, pred_patch_num, featured_patch_channel))
+            # 각 변수별로 별도의 쿼리 셋을 학습 가능한 파라미터(nn.Parameter)로 생성합니다.
+            # 크기는 [변수 수, 예측 패치 수, featured_patch_channel]입니다.
         
         # --- 학습 가능한 위치 인코딩 ---
         # 입력 시퀀스의 위치 정보를 제공하기 위해, '학습 가능한 위치 인코딩(Positional Encoding)'을 파라미터로 생성합니다.
@@ -184,7 +184,7 @@ class Dummy_Embedding(nn.Module):
         
     # 순전파 로직을 정의합니다.
     def forward(self, x) -> Tensor:
-        # 입력 x의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, 패치 길이]
+        # 입력 x의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, featured_patch_channel]
         # 디코더에 입력하기 위한 seq_patch와 pred_patch의 형태: [배치 크기*변수 수, 시퀀스 패치 수, d_model]
         # 디코더의 출력 형태: [배치 크기, 변수 수, 예측 패치 수, d_model]        
         bs = x.shape[0]
@@ -195,7 +195,7 @@ class Dummy_Embedding(nn.Module):
         # --- 1. 디코더에 입력할입력 시퀀스 준비. seq_patch: [배치 크기*변수 수, 시퀀스 패치 수, d_model] 구하기---
         x = self.W_P(x) + self.PE
         # 입력 패치에 Positional Encoding을 추가해주는 과정이다.
-        # 입력 패치 `x`를 선형 레이어 `W_P(patch_len을 d_model로 변환)`로 임베딩하면 결과 x의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, d_model] 
+        # 입력 패치 `x`를 선형 레이어 `W_P(featured_patch_channel을 d_model로 변환)`로 임베딩하면 결과 x의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, d_model] 
         # PE의 모양: [시퀀스 패치 수, d_model]
         # 수학식: Enc(x) = W_p(x) + PE. 브로드캐스팅을 통해 PE를 결과 x의 시퀀스 패치수, d_model 차원에 더합니다.
         # 결과 x의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, d_model]
@@ -207,24 +207,24 @@ class Dummy_Embedding(nn.Module):
         seq_patch = self.dropout(x)
         # 인코딩된 입력 패치에 드롭아웃을 적용합니다.
          
-        # --- 2. 디코더에 입력할 더미 입력 준비. pred_patch: [배치 크기*변수 수, 시퀀스 패치 수, d_model] 구하기---
-        dummies = self.W_P(self.dummies)
-        # 더미 입력 `dummies` 또한 동일한 선형 레이어 `W_P`로 임베딩합니다.
-        # 결과 dummies의 형태: (독립적일 때) [예측 패치 수, d_model]. 왜냐하면 self.dummies = nn.Parameter(0.5*torch.randn(pred_patch_num, patch_len))
-        # 결과 dummies의 형태: (종속적일 때) [변수 수, 예측 패치 수, d_model]. 왜냐하면 self.dummies = nn.Parameter(0.5*torch.randn(c_in, pred_patch_num, patch_len))
+        # --- 2. 디코더에 입력할 학습 가능한 쿼리 준비. pred_patch: [배치 크기*변수 수, 시퀀스 패치 수, d_model] 구하기---
+        learnable_queries = self.W_P(self.learnable_queries)
+        # 학습 가능한 쿼리 `learnable_queries` 또한 동일한 선형 레이어 `W_P`로 임베딩합니다.
+        # 결과 learnable_queries의 형태: (독립적일 때) [예측 패치 수, d_model]. 왜냐하면 self.learnable_queries = nn.Parameter(0.5*torch.randn(pred_patch_num, featured_patch_channel))
+        # 결과 learnable_queries의 형태: (종속적일 때) [변수 수, 예측 패치 수, d_model]. 왜냐하면 self.learnable_queries = nn.Parameter(0.5*torch.randn(c_in, pred_patch_num, featured_patch_channel))
         
-        if self.independence:
+        if self.channel_independence:
             # 변수들이 독립적일 경우,
-            pred_patch = dummies.unsqueeze(0).repeat(bs*n_vars, 1, 1)           
-            # 공유된 더미 입력을 배치 내 모든 샘플 및 변수에 대해 동일하게 복제합니다.
-            # dummies: [예측 패치 수, d_model] 에 unsqueeze(0)을 해서 [1, 예측 패치 수, d_model] 로 만듦.
+            pred_patch = learnable_queries.unsqueeze(0).repeat(bs*n_vars, 1, 1)           
+            # 공유된 쿼리를 배치 내 모든 샘플 및 변수에 대해 동일하게 복제합니다.
+            # learnable_queries: [예측 패치 수, d_model] 에 unsqueeze(0)을 해서 [1, 예측 패치 수, d_model] 로 만듦.
             # .repeat(bs*n_vars,1,1) 으로 첫 번째 차원(방금 추가한 차원)을 bs*n_vars번 복제합니다.
             # 최종 형태: [bs*n_vars, pred_patch_num, d_model]
         else:
             # 변수들이 종속적일 경우,
-            pred_patch = dummies.unsqueeze(0).repeat(bs, 1, 1, 1)                
-            # 각 변수별 더미 입력을 배치 내 모든 샘플에 대해 복제합니다.
-            # dummies: [변수 수, 예측 패치 수, d_model] 애 unsqueeze(0)을 해서 [1, 변수 수, 예측 패치 수, d_model] 로 만듦.
+            pred_patch = learnable_queries.unsqueeze(0).repeat(bs, 1, 1, 1)                
+            # 각 변수별 쿼리를 배치 내 모든 샘플에 대해 복제합니다.
+            # learnable_queries: [변수 수, 예측 패치 수, d_model] 애 unsqueeze(0)을 해서 [1, 변수 수, 예측 패치 수, d_model] 로 만듦.
             # .repeat(bs, 1, 1, 1) 으로 첫 번째 차원(방금 추가한 차원)을 bs번 복제합니다.
             # 그 결과: [bs, n_vars, pred_patch_num, d_model]
             
@@ -234,7 +234,7 @@ class Dummy_Embedding(nn.Module):
         
         # --- 3. 디코더 순전파 ---
         z = self.decoder(seq_patch, pred_patch)
-        # 준비된 입력 패치(`seq_patch`)와 더미 입력(`pred_patch`)을 디코더에 전달합니다.
+        # 준비된 입력 패치(`seq_patch`)와 학습 가능한 쿼리(`pred_patch`)를 디코더에 전달합니다.
         # `pred_patch`가 쿼리(Query) 역할을, `seq_patch`가 키(Key)와 값(Value) 역할을 수행합니다.
         # 입력되는 seq_patch, pred_patch의 형태: [배치 크기*변수 수, 시퀀스 패치 수, d_model]
         # 결과 z의 형태: [배치 크기 * 변수 수, 예측 패치 수, d_model]
@@ -247,26 +247,26 @@ class Dummy_Embedding(nn.Module):
 # 트랜스포머 백본의 출력을 최종 예측 시계열 형태로 변환하는 프로젝션 클래스입니다.
 class Projection(nn.Module):
     # 프로젝션 클래스의 생성자입니다.
-    def __init__(self, d_model, patch_len):
+    def __init__(self, d_model, featured_patch_channel):
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
-        self.linear = nn.Linear(d_model,patch_len)
-        # 트랜스포머의 은닉 상태 차원, 즉 임베딩 차원(`d_model`)을 패치 길이(`patch_len`)로 변환하는 선형 레이어를 정의합니다.
+        self.linear = nn.Linear(d_model, featured_patch_channel)
+        # 트랜스포머의 은닉 상태 차원, 즉 임베딩 차원(`d_model`)을 `featured_patch_channel`로 변환하는 선형 레이어를 정의합니다.
         self.flatten = nn.Flatten(start_dim = -2)
         # 예측 패치들을 하나의 연속된 시계열로 펼치기 위한 Flatten 레이어를 정의합니다.
         # `start_dim=-2`는 마지막에서 두 번째 차원부터 평탄화를 시작하도록 지정합니다.
-        # [배치 크기, 변수 수, pred_patch_num, patch_len] -> [배치 크기, 변수 수, pred_patch_num * patch_len]
+        # [배치 크기, 변수 수, pred_patch_num, featured_patch_channel] -> [배치 크기, 변수 수, pred_patch_num * featured_patch_channel]
             
     # 프로젝션의 순전파 로직을 정의합니다.
     def forward(self, x):
         x = self.linear(x)
         # 입력 `x`를 선형 레이어에 통과시켜 차원을 변환합니다.
         # 입력 x의 형태 (디코더의 최종 출력): [배치 크기, 변수 수, 예측 패치 수, d_model]  
-        # linear 층 거친 후 결과: [배치 크기, 변수 수, 예측 패치 수, patch_len]
+        # linear 층 거친 후 결과: [배치 크기, 변수 수, 예측 패치 수, featured_patch_channel]
         
         x = self.flatten(x)
         # 변환된 텐서를 평탄화하여 예측 패치들을 하나의 시계열로 만듭니다.
-        # 결과: [배치 크기, 변수 수, 예측 패치 수 * patch_len]
+        # 결과: [배치 크기, 변수 수, 예측 패치 수 * featured_patch_channel]
         return x                            
             
 # 여러 개의 디코더 레이어로 구성된 트랜스포머 디코더 클래스입니다.
@@ -500,8 +500,8 @@ class Model(nn.Module):
         d_model = args.d_model           # 모델의 은닉 상태 차원
         d_ff = args.d_ff                 # 피드포워드 네트워크의 내부 차원
         dropout = args.dropout           # 드롭아웃 비율
-        independence = args.query_independence # 변수 독립성 여부
-        patch_len = args.patch_len       # 각 패치의 길이
+        channel_independence = args.channel_independence # 변수 독립성 여부
+        featured_patch_channel = args.patch_len # 각 패치의 길이
         stride = args.stride             # 패치 추출 시의 보폭
         padding_patch = args.padding_patch # 패딩 전략
         store_attn = args.store_attn     # 어텐션 가중치 저장 여부
@@ -509,8 +509,8 @@ class Model(nn.Module):
         QAM_end = args.QAM_end           # QAM 끝 확률
 
         # 로드한 하이퍼파라미터들을 사용하여 `Model_backbone`을 초기화합니다.
-        self.model = Model_backbone(c_in=c_in, seq_len = seq_len, pred_len=self.pred_len, patch_len=patch_len, stride=stride, n_layers=n_layers, 
-                                    d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout,independence=independence, 
+        self.model = Model_backbone(c_in=c_in, seq_len = seq_len, pred_len=self.pred_len, featured_patch_channel=featured_patch_channel, stride=stride, n_layers=n_layers,
+                                    d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout,channel_independence=channel_independence, 
                                     store_attn=store_attn, padding_patch = padding_patch, QAM_start=QAM_start, QAM_end=QAM_end, **kwargs)
 
     
