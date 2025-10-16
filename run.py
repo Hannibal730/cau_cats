@@ -36,7 +36,7 @@ def setup_logging(data_dir):
             logging.StreamHandler()
         ]
     )
-    logging.info("로깅을 시작합니다.")
+    logging.info("log 기록 시작.")
 
 # =============================================================================
 # 2. 이미지 인코더 모델 정의
@@ -149,7 +149,7 @@ class PatchConvEncoder(nn.Module):
             
         return conv_outs
 
-class XModel(torch.nn.Module):
+class HybridModel(torch.nn.Module):
     """인코더와 CATS 분류기를 결합한 최종 하이브리드 모델입니다."""
     def __init__(self, encoder, classifier):
         super().__init__()
@@ -166,6 +166,23 @@ class XModel(torch.nn.Module):
 # =============================================================================
 # 3. 훈련 및 평가 함수
 # =============================================================================
+def log_model_parameters(model):
+    """모델의 구간별 및 총 파라미터 수를 계산하고 로깅합니다."""
+    
+    def count_parameters(m):
+        return sum(p.numel() for p in m.parameters() if p.requires_grad)
+
+    encoder_params = count_parameters(model.encoder)
+    classifier_params = count_parameters(model.classifier)
+    total_params = encoder_params + classifier_params
+
+    logging.info("="*50)
+    logging.info("모델 파라미터 수:")
+    logging.info(f"  - Encoder (PatchConvEncoder): {encoder_params:,} 개")
+    logging.info(f"  - Classifier (CATS_Model):    {classifier_params:,} 개")
+    logging.info(f"  - 총 파라미터:                  {total_params:,} 개")
+    logging.info("="*50)
+
 def evaluate(model, test_loader, device):
     """모델을 평가하고 정확도, 정밀도, 재현율, F1 점수를 로깅합니다."""
     model.eval()
@@ -256,7 +273,7 @@ def inference(args, model, test_loader, device):
 
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
-        logging.info(f"'{model_path}'에서 모델 가중치를 성공적으로 불러왔습니다.")
+        logging.info(f"'{model_path}' 가중치 로드 완료.")
     except Exception as e:
         logging.error(f"모델 가중치 로딩 중 오류 발생: {e}")
         return
@@ -281,7 +298,6 @@ def inference(args, model, test_loader, device):
         logging.info("CUDA를 사용할 수 없어 GPU 메모리 사용량을 측정할 수 없습니다.")
 
     # 2. 테스트셋 성능 평가
-    logging.info("테스트셋에 대한 성능 평가를 시작합니다.")
     evaluate(model, test_loader, device)
 
 # =============================================================================
@@ -303,6 +319,13 @@ if __name__ == '__main__':
     cats_cfg = SimpleNamespace(**model_cfg.cats)
 
     setup_logging(run_cfg.data_dir)
+    
+    # --- 설정 파일 내용 로깅 ---
+    config_str = yaml.dump(config, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    logging.info("="*50)
+    logging.info("run.yaml:")
+    logging.info("\n" + config_str)
+    logging.info("="*50)
     
     # --- 공통 파라미터 설정 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -339,7 +362,8 @@ if __name__ == '__main__':
 
         train_loader = DataLoader(train_dataset, batch_size=train_cfg.batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=train_cfg.batch_size, shuffle=False)
-        logging.info(f"데이터 로딩 완료. 훈련 데이터: {len(train_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
+        logging.info(f"데이터 로드를 시작합니다.")
+        logging.info(f"훈련 데이터: {len(train_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
     except FileNotFoundError:
         logging.error(f"데이터 폴더 '{run_cfg.data_dir}'를 찾을 수 없습니다. 경로를 확인해주세요.")
         exit()
@@ -378,10 +402,16 @@ if __name__ == '__main__':
     encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
                                hidden_dim=cats_cfg.featured_patch_channel, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
     classifier = CATS_Model(args=cats_args)
-    model = XModel(encoder, classifier).to(device)
+    model = HybridModel(encoder, classifier).to(device)
+
+    # 모델 생성 후 파라미터 수 로깅
+    log_model_parameters(model)
     
     # --- 모드에 따라 실행 ---
     if run_cfg.mode == 'train':
         train(cli_args, model, train_loader, test_loader, device)
+        
+        logging.info("="*50)
+        inference(cli_args, model, test_loader, device)
     elif run_cfg.mode == 'inference':
         inference(cli_args, model, test_loader, device)
