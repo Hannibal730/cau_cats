@@ -9,6 +9,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from types import SimpleNamespace
 import numpy as np
 import argparse
+import yaml
 import logging
 from datetime import datetime
 
@@ -38,38 +39,77 @@ def setup_logging(data_dir):
     logging.info("로깅을 시작합니다.")
 
 # =============================================================================
-# 2. 이미지 인코더 모델 정의 (ResNetFront, PatchConvEncoder)
+# 2. 이미지 인코더 모델 정의
 # =============================================================================
-class ResNetFront(nn.Module):
-    """사전 훈련된 ResNet의 앞부분을 특징 추출기로 사용하는 클래스입니다."""
-    def __init__(self, backbone='resnet50', pretrained=True, in_channels=3, out_channels=None):
+class CnnFeatureExtractor(nn.Module):
+    """
+    다양한 CNN 아키텍처의 앞부분을 특징 추출기로 사용하는 범용 클래스입니다.
+    run.yaml의 `cnn_feature_extractor.name` 설정에 따라 모델 구조가 결정됩니다.
+    """
+    def __init__(self, cnn_feature_extractor_name='resnet18_layer1', pretrained=True, in_channels=3, out_channels=None):
         super().__init__()
-        # PyTorch 1.13 이상에서는 `weights` 파라미터를 권장합니다.
-        if pretrained:
-            resnet = getattr(models, backbone)(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        self.cnn_feature_extractor_name = cnn_feature_extractor_name
+        
+        # CNN 모델 이름에 따라 모델과 잘라낼 레이어, 기본 출력 채널을 설정합니다.
+        if cnn_feature_extractor_name == 'resnet18_layer1':
+            base_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
+            self._adjust_input_channels(base_model, in_channels)
+            self.front = nn.Sequential(*list(base_model.children())[:5]) # layer1까지
+            base_out_channels = 64
+        elif cnn_feature_extractor_name == 'resnet18_layer2':
+            base_model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None)
+            self._adjust_input_channels(base_model, in_channels)
+            self.front = nn.Sequential(*list(base_model.children())[:6]) # layer2까지
+            base_out_channels = 128
+        elif cnn_feature_extractor_name == 'mobilenet_v3_small_feat1':
+            base_model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None)
+            self._adjust_input_channels(base_model, in_channels)
+            self.front = base_model.features[:2] # features의 2번째 블록까지
+            base_out_channels = 16
+        elif cnn_feature_extractor_name == 'mobilenet_v3_small_feat3':
+            base_model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None)
+            self._adjust_input_channels(base_model, in_channels)
+            self.front = base_model.features[:4] # features의 4번째 블록까지
+            base_out_channels = 24
+        elif cnn_feature_extractor_name == 'efficientnet_b0_feat2':
+            base_model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None)
+            self._adjust_input_channels(base_model, in_channels)
+            self.front = base_model.features[:3] # features의 3번째 블록까지
+            base_out_channels = 24
+        elif cnn_feature_extractor_name == 'efficientnet_b0_feat3':
+            base_model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None)
+            self._adjust_input_channels(base_model, in_channels)
+            self.front = base_model.features[:4] # features의 4번째 블록까지
+            base_out_channels = 40
         else:
-            resnet = getattr(models, backbone)(weights=None)
+            raise ValueError(f"지원하지 않는 CNN 피처 추출기 이름입니다: {cnn_feature_extractor_name}")
 
-        if in_channels == 1:
-            conv1_weight = resnet.conv1.weight
-            new_conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-            with torch.no_grad():
-                new_conv1.weight.copy_(conv1_weight.mean(dim=1, keepdim=True))
-            resnet.conv1 = new_conv1
-        elif in_channels != 3:
-            raise ValueError("in_channels는 1 또는 3만 지원합니다.")
-
-        self.front = nn.Sequential(
-            resnet.conv1, resnet.bn1, resnet.relu,
-            resnet.maxpool, resnet.layer1,
-        )
-
-        self.base_out_channels = 256 if '50' in backbone else 64
-
-        if out_channels is not None and out_channels != self.base_out_channels:
-            self.channel_proj = nn.Conv2d(self.base_out_channels, out_channels, kernel_size=1)
+        # 최종 출력 채널 수를 `featured_patch_channel`에 맞추기 위한 1x1 컨볼루션 레이어입니다.
+        if out_channels is not None and out_channels != base_out_channels:
+            self.channel_proj = nn.Conv2d(base_out_channels, out_channels, kernel_size=1)
         else:
             self.channel_proj = nn.Identity()
+
+    def _adjust_input_channels(self, base_model, in_channels):
+        """모델의 첫 번째 컨볼루션 레이어의 입력 채널을 조정합니다."""
+        if in_channels == 1:
+            # 첫 번째 conv 레이어 찾기
+            if 'resnet' in self.cnn_feature_extractor_name:
+                first_conv = base_model.conv1
+                out_c, _, k, s, p, _, _, _ = first_conv.out_channels, first_conv.in_channels, first_conv.kernel_size, first_conv.stride, first_conv.padding, first_conv.dilation, first_conv.groups, first_conv.bias
+                new_conv = nn.Conv2d(1, out_c, kernel_size=k, stride=s, padding=p, bias=False)
+                with torch.no_grad():
+                    new_conv.weight.copy_(first_conv.weight.mean(dim=1, keepdim=True))
+                base_model.conv1 = new_conv
+            elif 'mobilenet' in self.cnn_feature_extractor_name or 'efficientnet' in self.cnn_feature_extractor_name:
+                first_conv = base_model.features[0][0] # nn.Sequential -> Conv2dNormActivation -> Conv2d
+                out_c, _, k, s, p, _, _, _ = first_conv.out_channels, first_conv.in_channels, first_conv.kernel_size, first_conv.stride, first_conv.padding, first_conv.dilation, first_conv.groups, first_conv.bias
+                new_conv = nn.Conv2d(1, out_c, kernel_size=k, stride=s, padding=p, bias=False)
+                with torch.no_grad():
+                    new_conv.weight.copy_(first_conv.weight.mean(dim=1, keepdim=True))
+                base_model.features[0][0] = new_conv
+        elif in_channels != 3:
+            raise ValueError("in_channels는 1 또는 3만 지원합니다.")
 
     def forward(self, x):
         x = self.front(x)
@@ -78,14 +118,14 @@ class ResNetFront(nn.Module):
 
 class PatchConvEncoder(nn.Module):
     """이미지를 패치로 나누고, 각 패치에서 특징을 추출하여 1D 시퀀스로 변환하는 인코더입니다."""
-    def __init__(self, in_channels, img_size, patch_size, hidden_dim, output_dim=None):
+    def __init__(self, in_channels, img_size, patch_size, hidden_dim, cnn_feature_extractor_name, output_dim=None):
         super(PatchConvEncoder, self).__init__()
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
         self.num_patches = (img_size // patch_size) ** 2
         
         self.shared_conv = nn.Sequential(
-            ResNetFront(backbone='resnet50', pretrained=True, in_channels=in_channels, out_channels=hidden_dim),
+            CnnFeatureExtractor(cnn_feature_extractor_name=cnn_feature_extractor_name, pretrained=True, in_channels=in_channels, out_channels=hidden_dim),
             nn.AdaptiveAvgPool2d((1, 1))
         )
 
@@ -248,90 +288,100 @@ def inference(args, model, test_loader, device):
 # 4. 메인 실행 블록
 # =============================================================================
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="CATS 기반 이미지 분류기")
-    parser.add_argument('--mode', type=str, required=True, choices=['train', 'inference'], help='실행 모드 (train 또는 inference)')
-    parser.add_argument('--data_dir', type=str, default='./Refined_mix', help='데이터셋 폴더 경로')
-    parser.add_argument('--batch_size', type=int, default=16, help='배치 크기')
-    parser.add_argument('--epochs', type=int, default=100, help='총 에포크 수')
-    parser.add_argument('--lr', type=float, default=0.001, help='학습률')
-    parser.add_argument('--model_path', type=str, default='best_model.pth', help='저장/로드할 모델 파일 이름')
-    
-    cli_args = parser.parse_args()
-    
-    setup_logging(cli_args.data_dir)
+    # --- YAML 설정 파일 로드 ---
+    parser = argparse.ArgumentParser(description="YAML 설정 파일을 이용한 CATS 기반 이미지 분류기")
+    parser.add_argument('--config', type=str, default='run.yaml', help='설정 파일 경로')
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # SimpleNamespace를 사용하여 딕셔너리처럼 접근 가능하게 변환
+    run_cfg = SimpleNamespace(**config['run'])
+    train_cfg = SimpleNamespace(**config['training'])
+    model_cfg = SimpleNamespace(**config['model'])
+    cats_cfg = SimpleNamespace(**model_cfg.cats)
+
+    setup_logging(run_cfg.data_dir)
     
     # --- 공통 파라미터 설정 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    img_size = 480
-    in_channels = 1
-    
-    cli_args.img_size = img_size
-    cli_args.in_channels = in_channels
 
     # --- 데이터 준비 ---
-    normalize = transforms.Normalize(mean=[0.5], std=[0.5])
+    normalize = transforms.Normalize(mean=[0.5]*model_cfg.in_channels, std=[0.5]*model_cfg.in_channels)
     
     train_transform = transforms.Compose([
-        transforms.Resize((int(img_size*1.1), int(img_size*1.1))),
+        transforms.Resize((int(model_cfg.img_size*1.1), int(model_cfg.img_size*1.1))),
         transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-        transforms.RandomResizedCrop(img_size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+        transforms.RandomResizedCrop(model_cfg.img_size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
         transforms.RandomHorizontalFlip(p=0.5),
-        transforms.Grayscale(num_output_channels=in_channels),
+        transforms.Grayscale(num_output_channels=model_cfg.in_channels),
         transforms.ToTensor(),
         normalize
     ])
 
     test_transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.Grayscale(num_output_channels=in_channels),
+        transforms.Resize((model_cfg.img_size, model_cfg.img_size)),
+        transforms.Grayscale(num_output_channels=model_cfg.in_channels),
         transforms.ToTensor(),
         normalize
     ])
     
     try:
-        base_dataset = datasets.ImageFolder(root=cli_args.data_dir)
+        base_dataset = datasets.ImageFolder(root=run_cfg.data_dir)
         targets = base_dataset.targets
         
-        splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        splitter = StratifiedShuffleSplit(n_splits=1, test_size=run_cfg.test_split_ratio, random_state=run_cfg.random_state)
         train_idx, test_idx = next(splitter.split(range(len(targets)), targets))
 
-        train_dataset = Subset(datasets.ImageFolder(root=cli_args.data_dir, transform=train_transform), train_idx)
-        test_dataset = Subset(datasets.ImageFolder(root=cli_args.data_dir, transform=test_transform), test_idx)
+        train_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=train_transform), train_idx)
+        test_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=test_transform), test_idx)
 
-        train_loader = DataLoader(train_dataset, batch_size=cli_args.batch_size, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=cli_args.batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=train_cfg.batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=train_cfg.batch_size, shuffle=False)
         logging.info(f"데이터 로딩 완료. 훈련 데이터: {len(train_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
     except FileNotFoundError:
-        logging.error(f"데이터 폴더 '{cli_args.data_dir}'를 찾을 수 없습니다. 경로를 확인해주세요.")
+        logging.error(f"데이터 폴더 '{run_cfg.data_dir}'를 찾을 수 없습니다. 경로를 확인해주세요.")
         exit()
 
     # --- 모델 구성 ---
-    patch_len = 32
-    emb_dim = 24
-    n_heads = 4
-    d_layers = 2
-    patch_size = 120
     num_labels = len(base_dataset.classes)
     
-    patch_num = (img_size // patch_size) ** 2
-    seq_len = patch_num * patch_len
+    patch_num = (model_cfg.img_size // model_cfg.patch_size) ** 2
+    seq_len = patch_num * cats_cfg.featured_patch_channel
     
     cats_params = {
-        'seq_len': seq_len, 'pred_len': num_labels, 'd_layers': d_layers,
-        'dec_in': 1, 'd_model': emb_dim, 'd_ff': emb_dim * 2, 'n_heads': n_heads,
-        'patch_len': patch_len, 'stride': patch_len, 'classification': True,
-        'dropout': 0.1, 'query_independence': False, 'padding_patch': 'end',
-        'store_attn': False, 'QAM_end': 0.0, 'QAM_start': 0.0, 'features': 'S',
-        'des': 'Exp', 'itr': 1,
+        'seq_len': seq_len, 'pred_len': num_labels, 'd_layers': cats_cfg.d_layers,
+        'dec_in': model_cfg.in_channels,
+        'd_model': cats_cfg.emb_dim,
+        'd_ff': cats_cfg.emb_dim * cats_cfg.d_ff_ratio,
+        'n_heads': cats_cfg.n_heads,
+        'patch_len': cats_cfg.featured_patch_channel,
+        'stride': cats_cfg.featured_patch_channel,
+        'classification': cats_cfg.classification,
+        'dropout': cats_cfg.dropout,
+        'channel_independence': cats_cfg.channel_independence,
+        'padding_patch': cats_cfg.padding_patch,
+        'store_attn': cats_cfg.store_attn,
+        'QAM_start': cats_cfg.qam['start'],
+        'QAM_end': cats_cfg.qam['end'],
     }
     cats_args = SimpleNamespace(**cats_params)
 
-    encoder = PatchConvEncoder(in_channels=in_channels, img_size=img_size, patch_size=patch_size, hidden_dim=patch_len)
+    # cli_args 대신 설정 파일 값들을 전달 (추론 시 사용)
+    cli_args = SimpleNamespace(
+        mode=run_cfg.mode, data_dir=run_cfg.data_dir, batch_size=train_cfg.batch_size,
+        epochs=train_cfg.epochs, lr=train_cfg.lr, model_path=run_cfg.model_path,
+        img_size=model_cfg.img_size, in_channels=model_cfg.in_channels
+    )
+
+    encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
+                               hidden_dim=cats_cfg.featured_patch_channel, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
     classifier = CATS_Model(args=cats_args)
     model = XModel(encoder, classifier).to(device)
     
     # --- 모드에 따라 실행 ---
-    if cli_args.mode == 'train':
+    if run_cfg.mode == 'train':
         train(cli_args, model, train_loader, test_loader, device)
-    elif cli_args.mode == 'inference':
+    elif run_cfg.mode == 'inference':
         inference(cli_args, model, test_loader, device)
