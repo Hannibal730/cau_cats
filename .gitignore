@@ -2,5 +2,3 @@
 *.png
 *.log
 *.pth
-*.pyc
-__pycache__

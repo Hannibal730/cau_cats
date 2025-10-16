@@ -309,7 +309,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, default='run.yaml', help='설정 파일 경로')
     args = parser.parse_args()
 
-    with open(args.config, 'r') as f:
+    with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     # SimpleNamespace를 사용하여 딕셔너리처럼 접근 가능하게 변환

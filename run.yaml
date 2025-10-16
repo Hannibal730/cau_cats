@@ -3,7 +3,8 @@
 # =============================================================================
 run:
   mode: 'train'                # 실행 모드. 'train': 모델 훈련, 'inference': 모델 추론 및 성능 평가
-  data_dir: './Refined_mix'    # 데이터셋 폴더 경로. PyTorch의 ImageFolder 형식(클래스별 하위 폴더)을 따라야 합니다.
+  # data_dir: './Refined_mix'    # 데이터셋 폴더 경로. PyTorch의 ImageFolder 형식(클래스별 하위 폴더)을 따라야 합니다.
+  data_dir: './tap_new'    # 데이터셋 폴더 경로. PyTorch의 ImageFolder 형식(클래스별 하위 폴더)을 따라야 합니다.
   model_path: 'best_model.pth' # 훈련 시 저장할 최고 성능 모델의 파일 이름 또는 추론 시 불러올 모델의 파일 이름.
   test_split_ratio: 0.2        # 전체 데이터셋에서 테스트 데이터로 분할할 비율.
   random_state: 42             # 데이터 분할 시 사용될 랜덤 시드. 재현성을 위해 고정합니다.
@@ -12,7 +13,7 @@ run:
 # 2. 훈련 하이퍼파라미터
 # =============================================================================
 training:
-  epochs: 1                  # 총 훈련 에포크 수.
+  epochs: 30                 
   batch_size: 16               # 훈련 및 평가 시 사용할 배치 크기. GPU 메모리에 따라 조절합니다.
   lr: 0.001                    # 옵티마이저(AdamW)의 학습률.
 
@@ -33,7 +34,7 @@ model:
     # - 'mobilenet_v3_small_feat3': MobileNetV3-Small의 features[3]까지 사용
     # - 'efficientnet_b0_feat2': EfficientNet-B0의 features[2]까지 사용
     # - 'efficientnet_b0_feat3': EfficientNet-B0의 features[3]까지 사용
-    name: 'resnet18_layer1'    
+    name: 'efficientnet_b0_feat2'    
 
   # --- CATS 모델 설정 ---
   cats:
@@ -43,7 +44,7 @@ model:
     d_layers: 2                # CATS 모델 내부의 트랜스포머 디코더 레이어 수.
     d_ff_ratio: 2              # 트랜스포머의 피드포워드 네트워크(FFN) 내부 차원을 결정하는 비율 (d_ff = emb_dim * d_ff_ratio).
     dropout: 0.1               # CATS 모델 내부에 적용될 드롭아웃 비율.
-    channel_independence: False # 학습 가능한 쿼리(learnable_queries)의 채널별 독립성 여부. True이면 모든 채널이 쿼리 파라미터를 공유하고, False이면 채널별로 다른 쿼리를 학습합니다.
+    channel_independence: True # 학습 가능한 쿼리(learnable_queries)의 채널별 독립성 여부. True이면 모든 채널이 쿼리 파라미터를 공유하고, False이면 채널별로 다른 쿼리를 학습합니다.
     padding_patch: 'end'       # CATS 모델이 내부적으로 1D 시퀀스를 패치로 나눌 때 사용할 패딩 전략.
     store_attn: False          # 추론 시 어텐션 맵을 저장할지 여부. True로 설정하면 시각화에 사용할 수 있습니다.
     classification: True       # 모델을 분류 문제용으로 설정. CATS 모델의 출력 구조에 영향을 줍니다.
