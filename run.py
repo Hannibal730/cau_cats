@@ -1,4 +1,5 @@
 import os
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -201,20 +202,21 @@ def log_model_parameters(model):
     logging.info(f"  - 총 파라미터:                  {total_params:,} 개")
     logging.info("="*50)
 
-def evaluate(model, test_loader, device):
+def evaluate(model, data_loader, device, desc="Evaluating"):
     """모델을 평가하고 정확도, 정밀도, 재현율, F1 점수를 로깅합니다."""
     model.eval()
     correct = 0
     total = 0
     all_preds = []
     all_labels = []
-    
+
+    progress_bar = tqdm(data_loader, desc=desc, leave=False)
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
-            
+
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             
@@ -230,7 +232,7 @@ def evaluate(model, test_loader, device):
     recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
     f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
     
-    logging.info(f'Test Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
+    logging.info(f'{desc} | Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
     return f1
 
 def train(args, model, train_loader, valid_loader, device):
@@ -252,8 +254,9 @@ def train(args, model, train_loader, valid_loader, device):
         running_loss = 0.0
         correct = 0
         total = 0
-
-        for images, labels in train_loader:
+        
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Training]", leave=False)
+        for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
             
             optimizer.zero_grad()
@@ -266,12 +269,15 @@ def train(args, model, train_loader, valid_loader, device):
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+            
+            # tqdm 프로그레스 바에 현재 loss 표시
+            progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
         train_acc = 100 * correct / total
         logging.info(f'Epoch [{epoch+1}/{args.epochs}], Loss: {running_loss/len(train_loader):.4f}, Train Accuracy: {train_acc:.2f}%')
         
         # --- 평가 단계 ---
-        f1 = evaluate(model, valid_loader, device)
+        f1 = evaluate(model, valid_loader, device, desc=f"Epoch {epoch+1}/{args.epochs} [Validation]")
         
         # 최고 성능 모델 저장
         if f1 > best_f1:
@@ -316,7 +322,7 @@ def inference(args, model, data_loader, device, mode_name="추론"):
         logging.info("CUDA를 사용할 수 없어 GPU 메모리 사용량을 측정할 수 없습니다.")
 
     # 2. 테스트셋 성능 평가
-    evaluate(model, data_loader, device)
+    evaluate(model, data_loader, device, desc=mode_name)
 
 # =============================================================================
 # 4. 데이터 준비 함수

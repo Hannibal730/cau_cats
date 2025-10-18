@@ -56,7 +56,7 @@ class Model_backbone(nn.Module):
     # 모델 백본의 생성자입니다. 모델의 구조와 하이퍼파라미터를 초기화합니다.
     def __init__(self, num_encoder_patches:int, num_labels:int, featured_patch_dim:int=24, n_layers:int=3, emb_dim=128, n_heads=16, d_ff:int=256,
                  attn_dropout:float=0., dropout:float=0., res_attention:bool=True, store_attn:bool=False, QAM_start:float = 0.1,
-                 QAM_end:float =0.5, **kwargs):
+                 QAM_end:float =0.5, positional_encoding:bool=True, **kwargs):
         
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
