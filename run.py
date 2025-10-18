@@ -125,36 +125,37 @@ class PatchConvEncoder(nn.Module):
         super(PatchConvEncoder, self).__init__()
         self.patch_size = patch_size
         self.featured_patch_dim = featured_patch_dim
-        self.num_patches = (img_size // patch_size) ** 2
+        self.num_encoder_patches = (img_size // patch_size) ** 2
         
         self.shared_conv = nn.Sequential(
             CnnFeatureExtractor(cnn_feature_extractor_name=cnn_feature_extractor_name, pretrained=True, in_channels=in_channels, out_channels=featured_patch_dim),
             nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(start_dim=1) # [B*N, D, 1, 1] -> [B*N, D]
+            nn.Flatten(start_dim=1) # [B*N, D, 1, 1] -> [B*N, D] 형태가 됩니다.
         )
         self.norm = nn.LayerNorm(featured_patch_dim)
 
     def forward(self, x):
         B, C, H, W = x.shape
         patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
+        # patches.shape: [B, C, num_patches_h, num_patches_w, patch_size, patch_size]
         patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(-1, C, self.patch_size, self.patch_size)
+        # patches.shape: [B * num_patches, C, patch_size, patch_size]
         
         conv_outs = self.shared_conv(patches)
-        conv_outs = conv_outs.view(conv_outs.size(0), -1)
         # 각 패치 특징 벡터에 대해 Layer Normalization 적용
         conv_outs = self.norm(conv_outs)
         # CATS 모델에 입력하기 위해 [B, num_patches, dim] 형태로 재구성
-        conv_outs = conv_outs.view(B, self.num_patches, self.featured_patch_dim)
+        conv_outs = conv_outs.view(B, self.num_encoder_patches, self.featured_patch_dim)
         return conv_outs
 
 class Classifier(nn.Module):
     """CATS 모델의 출력을 받아 최종 클래스 로짓으로 매핑하는 분류기입니다."""
-    def __init__(self, c_in, pred_patch_num, featured_patch_dim, num_labels, dropout):
+    def __init__(self, num_decoder_patches, featured_patch_dim, num_labels, dropout):
         super().__init__()
         self.flatten = nn.Flatten(start_dim=1)
         self.dropout = nn.Dropout(dropout)
         # CATS 출력 특징 벡터를 최종 클래스 수로 매핑하는 선형 레이어
-        self.projection = nn.Linear(pred_patch_num * featured_patch_dim * c_in, num_labels)
+        self.projection = nn.Linear(num_decoder_patches * featured_patch_dim, num_labels)
 
     def forward(self, x):
         # x shape: [B, C, pred_patch_num * featured_patch_dim]
@@ -449,20 +450,16 @@ if __name__ == '__main__':
     train_loader, valid_loader, test_loader, num_labels, class_names = prepare_data(run_cfg, train_cfg, model_cfg, "Sewer-ML")
 
     # --- 모델 구성 ---
-    patch_num = (model_cfg.img_size // model_cfg.patch_size) ** 2 # 16
-    seq_len = patch_num * cats_cfg.featured_patch_dim
+    num_encoder_patches = (model_cfg.img_size // model_cfg.patch_size) ** 2 # 16
     
     cats_params = {
-        'seq_len': seq_len, 'pred_len': num_labels, 'd_layers': cats_cfg.d_layers,
-        'dec_in': model_cfg.in_channels,
-        'd_model': cats_cfg.emb_dim,
+        'num_encoder_patches': num_encoder_patches,
+        'num_labels': num_labels, 'd_layers': cats_cfg.d_layers,
+        'emb_dim': cats_cfg.emb_dim,
         'd_ff': cats_cfg.emb_dim * cats_cfg.d_ff_ratio,
         'n_heads': cats_cfg.n_heads,
-        'patch_len': cats_cfg.featured_patch_dim,
-        'stride': cats_cfg.featured_patch_dim,
         'dropout': cats_cfg.dropout,
         'positional_encoding': cats_cfg.positional_encoding,
-        'channel_independence': cats_cfg.channel_independence,
         'store_attn': cats_cfg.store_attn,
         'QAM_start': cats_cfg.qam['start'],
         'QAM_end': cats_cfg.qam['end'],
@@ -483,8 +480,8 @@ if __name__ == '__main__':
                                featured_patch_dim=cats_cfg.featured_patch_dim, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
     cross_attention = CATS_Model(args=cats_args) # CATS.py의 Model 클래스
     
-    pred_patch_num = (num_labels + cats_cfg.featured_patch_dim - 1) // cats_cfg.featured_patch_dim
-    classifier = Classifier(c_in=model_cfg.in_channels, pred_patch_num=pred_patch_num, 
+    num_decoder_patches = (num_labels + cats_cfg.featured_patch_dim - 1) // cats_cfg.featured_patch_dim
+    classifier = Classifier(num_decoder_patches=num_decoder_patches, 
                             featured_patch_dim=cats_cfg.featured_patch_dim, num_labels=num_labels, dropout=cats_cfg.dropout)
     model = HybridModel(encoder, cross_attention, classifier).to(device)
 
