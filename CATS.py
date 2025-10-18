@@ -68,7 +68,7 @@ class Model_backbone(nn.Module):
         
         # --- 백본 모델(임베딩 및 디코더) 초기화 --- 
         self.backbone = Learnable_Query_Embedding(num_encoder_patches=num_encoder_patches, featured_patch_dim=self.featured_patch_dim, num_decoder_patches=num_decoder_patches,
-                                n_layers=n_layers, emb_dim=emb_dim, n_heads=n_heads, d_ff=d_ff, positional_encoding=kwargs.get('positional_encoding', True),
+                                n_layers=n_layers, emb_dim=emb_dim, n_heads=n_heads, d_ff=d_ff, positional_encoding=positional_encoding,
                                 attn_dropout=attn_dropout, dropout=dropout, QAM_start=QAM_start, QAM_end=QAM_end,
                                 res_attention=res_attention, store_attn=store_attn, **kwargs)
         # `Learnable_Query_Embedding` 클래스를 사용하여 실제 트랜스포머 연산을 수행할 백본을 생성합니다.
@@ -369,6 +369,7 @@ class Model(nn.Module):
         n_heads = args.n_heads           # 멀티헤드 어텐션의 헤드 수
         emb_dim = args.emb_dim           # 모델의 은닉 상태 차원
         d_ff = args.d_ff                 # 피드포워드 네트워크의 내부 차원
+        featured_patch_dim = args.featured_patch_dim # 각 패치의 특징 차원
         dropout = args.dropout           # 드롭아웃 비율
         positional_encoding = args.positional_encoding # 위치 인코딩 사용 여부
         store_attn = args.store_attn     # 어텐션 가중치 저장 여부
@@ -376,7 +377,7 @@ class Model(nn.Module):
         QAM_end = getattr(args, 'QAM_end', 0.0)     # QAM 끝 확률
 
         # 로드한 하이퍼파라미터들을 사용하여 `Model_backbone`을 초기화합니다. 
-        self.model = Model_backbone(num_encoder_patches=num_encoder_patches, num_labels=num_labels, featured_patch_dim=kwargs.get('featured_patch_dim'), n_layers=n_layers,
+        self.model = Model_backbone(num_encoder_patches=num_encoder_patches, num_labels=num_labels, featured_patch_dim=featured_patch_dim, n_layers=n_layers,
                                     emb_dim=emb_dim, n_heads=n_heads, d_ff=d_ff, dropout=dropout, positional_encoding=positional_encoding, store_attn=store_attn, QAM_start=QAM_start, QAM_end=QAM_end, **kwargs)
         
     

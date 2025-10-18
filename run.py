@@ -121,7 +121,7 @@ class CnnFeatureExtractor(nn.Module):
 
 class PatchConvEncoder(nn.Module):
     """이미지를 패치로 나누고, 각 패치에서 특징을 추출하여 1D 시퀀스로 변환하는 인코더입니다."""
-    def __init__(self, in_channels, img_size, patch_size, featured_patch_dim, cnn_feature_extractor_name, output_dim=None):
+    def __init__(self, in_channels, img_size, patch_size, featured_patch_dim, cnn_feature_extractor_name):
         super(PatchConvEncoder, self).__init__()
         self.patch_size = patch_size
         self.featured_patch_dim = featured_patch_dim
@@ -284,7 +284,7 @@ def inference(args, model, data_loader, device, mode_name="추론"):
     logging.info(f"{mode_name} 모드를 시작합니다.")
     
     data_dir_name = os.path.basename(os.path.normpath(args.data_dir))
-    model_path = os.path.join("checkpoints", "Sewer-ML", args.model_path) # 경로를 데이터셋에 맞게 고정하거나 동적으로 생성
+    model_path = os.path.join("checkpoints", data_dir_name, args.model_path)
     if not os.path.exists(model_path):
         logging.error(f"모델 파일('{model_path}')을 찾을 수 없습니다. 먼저 훈련을 실행하세요.")
         return
