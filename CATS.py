@@ -21,7 +21,6 @@ class GEGLU(nn.Module):
 # 특히, 마스킹 확률이 차원을 따라 선형적으로 변하는 특징이 있습니다.
 class QueryAdaptiveMasking(nn.Module):
     # QAM 클래스의 생성자입니다. 마스킹을 적용할 차원과 확률 범위를 설정합니다.
-    # 입력 텐서 x: (배치, N_T, d_model)
     def __init__(self, dim=1, start_prob =0.1, end_prob =0.5):
         super().__init__()
         # `nn.Module`의 생성자를 호출하여 PyTorch 모델로서의 기본 기능을 초기화합니다.
@@ -32,7 +31,7 @@ class QueryAdaptiveMasking(nn.Module):
         self.end_prob = end_prob
         # 마스킹 확률의 끝 값을 저장합니다. 이 값은 지정된 차원의 마지막 요소에 적용됩니다.
     # QAM의 순전파 로직을 정의합니다.
-    def forward(self, x): # 입력 텐서 x: (배치, N_T, d_model)
+    def forward(self, x):
         if not self.training:
             # 모델이 평가 모드(`model.eval()`)일 때는 마스킹을 적용하지 않습니다.
             return x
@@ -40,10 +39,9 @@ class QueryAdaptiveMasking(nn.Module):
         # 모델이 학습 모드(`model.train()`)일 때만 마스킹을 적용합니다.
         else:
             size = x.shape[self.dim]
-            # 마스킹을 적용할 차원의 크기, 즉 미래 예측 패치의 개수(N_T)를 가져옵니다.
+            # 마스킹을 적용할 차원의 크기(예: 디코더 쿼리 패치 수)를 가져옵니다.
             dropout_prob = torch.linspace(self.start_prob,self.end_prob,steps=size,device=x.device).view([-1 if i == self.dim else 1 for i in range(x.dim())])
             # `torch.linspace`를 사용하여 `start_prob`에서 `end_prob`까지 `size` 개수만큼 선형적으로 증가하는 드롭아웃 확률 시퀀스를 생성합니다.
-            # 각 패치마다 선형적으로 다른 드롭아웃 확률을 적용시킨다.
             # i번째 요소의 드롭아웃 확률은 p_i = p_start + (p_end - p_start) * (i / (size - 1)) 입니다.
             # `.view`를 통해 이 확률 텐서 x의 모양을 입력 텐서 `x`와 브로드캐스팅이 가능하도록 조정합니다.
             mask = torch.bernoulli(1 - dropout_prob).expand_as(x)
@@ -52,8 +50,8 @@ class QueryAdaptiveMasking(nn.Module):
             return x*mask
             # 생성된 마스크를 입력 텐서 `x`에 요소별로 곱하여 특정 요소들을 0으로 만듭니다(마스킹). 수학식은 x_out = x * mask 입니다.
 
-# 시계열 예측 모델의 핵심 구조인 백본(backbone)을 정의하는 클래스입니다.
-# 입력 데이터를 패치로 나누고, 트랜스포머 기반의 인코더-디코더 구조를 통해 예측을 수행합니다.
+# 이미지 분류 모델의 디코더 백본(backbone)을 정의하는 클래스입니다.
+# 입력 패치 시퀀스를 처리하고, 트랜스포머 기반의 디코더 구조를 통해 특징을 추출합니다.
 class Model_backbone(nn.Module):
     # 모델 백본의 생성자입니다. 모델의 구조와 하이퍼파라미터를 초기화합니다.
     def __init__(self, num_encoder_patches:int, num_labels:int, featured_patch_dim:int=24, n_layers:int=3, emb_dim=128, n_heads=16, d_ff:int=256,
@@ -66,7 +64,7 @@ class Model_backbone(nn.Module):
         self.featured_patch_dim = featured_patch_dim
         
         num_decoder_patches = (num_labels+self.featured_patch_dim-1)//self.featured_patch_dim
-        # 디코더에서 사용할 학습 가능한 쿼리 패치의 수를 계산합니다. `num_labels`를 `featured_patch_dim`으로 올림 나눗셈하여 구합니다.
+        # 디코더에서 사용할 학습 가능한 쿼리 패치의 수를 계산합니다.
         
         # --- 백본 모델(임베딩 및 디코더) 초기화 --- 
         self.backbone = Learnable_Query_Embedding(num_encoder_patches=num_encoder_patches, featured_patch_dim=self.featured_patch_dim, num_decoder_patches=num_decoder_patches,
@@ -77,8 +75,8 @@ class Model_backbone(nn.Module):
 
         self.num_labels = num_labels
         # 모델이 예측해야 할 클래스의 수를 저장합니다.
-        self.proj = Projection(emb_dim, self.featured_patch_dim)
-        # 백본의 출력(`emb_dim` 차원)을 최종 예측 패치(`featured_patch_dim` 차원)로 변환하는 프로젝션 레이어를 생성합니다.
+        self.proj = Decoder2Classifier(emb_dim, self.featured_patch_dim)
+        # 백본의 출력(`emb_dim` 차원)을 최종 분류기가 사용할 특징 벡터로 변환하는 헤드를 생성합니다.
     
     # 모델 백본의 순전파 로직을 정의합니다.
     def forward(self, z): # 입력 z의 형태: [배치 크기, 입력 다변량 시계열 데이터의 변수 개수, 시퀀스 길이L]
@@ -88,14 +86,13 @@ class Model_backbone(nn.Module):
         z = self.backbone(z)
         # 패치화된 입력을 백본 모델(`Learnable_Query_Embedding`)에 통과시킵니다.
         z = self.proj(z)
-        # 백본의 출력을 프로젝션 레이어에 통과시켜 최종 예측을 생성합니다.
+        # 백본의 출력을 헤드 레이어에 통과시켜 최종 특징 벡터를 생성합니다.
         
         return z
-        # 최종 예측 결과를 반환합니다.
     
 # 입력 패치와 학습 가능한 쿼리(learnable queries)를 임베딩하고 트랜스포머 디코더를 통해 예측을 수행하는 클래스입니다.
-# 디코더에 입력할 seq_encoder_patches와 seq_decoder_patches를 생성합니다. 이후 CATS 모델의 순전파에서 이들이 디코더에 입력되어 예측값을 생성하고, 오차 계산 및 역전파를 통해 훈련됩니다.
-# 이 파라미터는 처음에는 무작위 값으로 시작하지만, 훈련 과정을 통해 각 미래 패치를 예측하기 위한 유의미한 질문(쿼리)으로 학습되기 때문에 "학습 가능한 쿼리"라고 부릅니다.
+# 디코더에 입력할 seq_encoder_patches와 seq_decoder_patches를 생성합니다. 이후 디코더에 입력되어 특징 벡터를 생성하고, 오차 계산 및 역전파를 통해 훈련됩니다.
+# 이 파라미터는 처음에는 무작위 값으로 시작하지만, 훈련 과정을 통해 분류에 중요한 특징을 추출하기 위한 유의미한 질문(쿼리)으로 학습되기 때문에 "학습 가능한 쿼리"라고 부릅니다.
 class Learnable_Query_Embedding(nn.Module): 
     # 클래스의 생성자입니다.
     def __init__(self, num_encoder_patches, featured_patch_dim, num_decoder_patches, n_layers=3, emb_dim=128, n_heads=16, QAM_start=0.1, QAM_end=0.5, d_ff=256, 
@@ -114,7 +111,6 @@ class Learnable_Query_Embedding(nn.Module):
         self.learnable_queries = nn.Parameter(0.5*torch.randn(num_decoder_patches, featured_patch_dim))
         # 모든 변수가 공유하는 하나의 쿼리 셋을 학습 가능한 파라미터(nn.Parameter)로 생성합니다.
         # 더 좁은 범위에 집중시키 위해서 0.5를 곱하여 N(0,0.5^2)를 따르게 만든다.
-        # 크기는 [디코더 패치 수, featured_patch_dim]입니다.
         
         # --- 학습 가능한 위치 인코딩 ---
         # 입력 시퀀스의 위치 정보를 제공하기 위해, '학습 가능한 위치 인코딩(Positional Encoding)'을 파라미터로 생성합니다.
@@ -161,17 +157,16 @@ class Learnable_Query_Embedding(nn.Module):
 
         return z
             
-# 트랜스포머 백본의 출력을 최종 예측 시계열 형태로 변환하는 프로젝션 클래스입니다.
-class Projection(nn.Module):
-    # 프로젝션 클래스의 생성자입니다.
+class Decoder2Classifier(nn.Module):
+    """디코더의 출력을 받아 최종 분류기가 사용할 수 있는 특징 벡터로 변환합니다."""
     def __init__(self, emb_dim, featured_patch_dim):
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
         self.linear = nn.Linear(emb_dim, featured_patch_dim)
         # 트랜스포머의 은닉 상태 차원, 즉 임베딩 차원(`emb_dim`)을 `featured_patch_dim`으로 변환하는 선형 레이어를 정의합니다.
         self.flatten = nn.Flatten(start_dim=-2)
-        # 예측 패치들을 하나의 연속된 시계열로 펼치기 위한 Flatten 레이어를 정의합니다.
-    # 프로젝션의 순전파 로직을 정의합니다.
+        # 디코더 패치들을 하나의 벡터로 펼치기 위한 Flatten 레이어를 정의합니다.
+
     def forward(self, x):
         # 입력 x의 형태: [B, num_decoder_patches, emb_dim]
         x = self.linear(x)
@@ -197,7 +192,7 @@ class Decoder(nn.Module):
         # `n_layers` 개수만큼의 `DecoderLayer`를 `nn.ModuleList`로 묶어 관리합니다.
         
         self.res_attention = res_attention
-        # 잔차 어텐션(residual attention) 메커니즘 사용 여부를 저장합니다. (어텐션 스코어를 다음 레이어에 더해주는 기법)
+        # 잔차 어텐션(어텐션 스코어를 다음 레이어에 더해주는 기법) 메커니즘 사용 여부를 저장합니다.
     # 디코더의 순전파 로직을 정의합니다.
     def forward(self, seq_encoder:Tensor, seq_decoder:Tensor):
         scores = None
@@ -292,8 +287,8 @@ class _MultiheadAttention(nn.Module):
         """
         멀티헤드 어텐션 레이어
         입력 형태:
-            Q: [배치 크기, 디코더 패치 수, emb_dim]
-            K, V: [배치 크기, 인코더 패치 수, emb_dim]
+            Q (쿼리): [배치 크기, 디코더 패치 수, emb_dim]
+            K (키), V (값): [배치 크기, 인코더 패치 수, emb_dim]
         """
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
@@ -335,8 +330,6 @@ class _MultiheadAttention(nn.Module):
         # --- 어텐션 스코어 계산 ---
         attn_scores = torch.einsum('bphd, bshd -> bphs', q_s, k_s) * self.scale
         # `torch.einsum` (아인슈타인 표기법)을 사용하여 Q와 K의 내적을 효율적으로 계산합니다.
-        # b: batch, p: Q의 시퀀스 차원, s: K의 시퀀스 차원, h: head, d: dimension
-        # 이는 행렬 곱 Q * K^T 와 동일한 연산입니다.
         # 계산된 스코어를 `scale` 팩터로 스케일링합니다. Attention(Q, K) = (Q * K^T) / sqrt(d_k)
         
         if prev is not None: attn_scores = attn_scores + prev
@@ -350,7 +343,6 @@ class _MultiheadAttention(nn.Module):
 
         output = torch.einsum('bphs, bshd -> bphd', attn_weights, v_s)
         # 어텐션 가중치와 값(V)을 `einsum`으로 곱하여 최종 출력을 계산합니다.
-        # 이는 Attention Weight * V 와 동일한 연산입니다.
         output = output.contiguous().view(bs, -1, self.n_heads*self.d_h)
         # 나뉘었던 헤드들을 `contiguous()`와 `view`를 통해 다시 하나의 텐서로 합칩니다.
         
@@ -361,7 +353,7 @@ class _MultiheadAttention(nn.Module):
         else: return output, attn_weights
 
 # 전체 모델을 구성하고 순전파를 정의하는 메인 클래스입니다.
-# 하이퍼파라미터를 인자로 받아 `Model_backbone`을 초기화하고 데이터의 입출력 형식을 관리합니다.
+# 하이퍼파라미터를 인자로 받아 `Model_backbone`을 초기화합니다.
 class Model(nn.Module):
     # 전체 모델의 생성자입니다.
     def __init__(self, args, **kwargs):
@@ -384,7 +376,7 @@ class Model(nn.Module):
         QAM_end = getattr(args, 'QAM_end', 0.0)     # QAM 끝 확률
 
         # 로드한 하이퍼파라미터들을 사용하여 `Model_backbone`을 초기화합니다. 
-        self.model = Model_backbone(num_encoder_patches=num_encoder_patches, num_labels=num_labels, featured_patch_dim=args.featured_patch_dim, n_layers=n_layers,
+        self.model = Model_backbone(num_encoder_patches=num_encoder_patches, num_labels=num_labels, featured_patch_dim=kwargs.get('featured_patch_dim'), n_layers=n_layers,
                                     emb_dim=emb_dim, n_heads=n_heads, d_ff=d_ff, dropout=dropout, positional_encoding=positional_encoding, store_attn=store_attn, QAM_start=QAM_start, QAM_end=QAM_end, **kwargs)
         
     
@@ -393,5 +385,5 @@ class Model(nn.Module):
 
         # 백본 모델에 입력을 통과시켜 특징 텐서를 추출합니다.
         features = self.model(x)
-        # 결과 features의 형태: [B, 1, num_decoder_patches * featured_patch_dim]
+        # 결과 features의 형태: [B, num_decoder_patches * featured_patch_dim]
         return features

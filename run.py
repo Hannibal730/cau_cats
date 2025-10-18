@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 
 # CATS 모델 아키텍처 임포트
-from CATS import Model as CATS_Model
+from CATS import Model as CatsDecoder
 
 # =============================================================================
 # 1. 로깅 설정
@@ -164,17 +164,17 @@ class Classifier(nn.Module):
 
 class HybridModel(torch.nn.Module):
     """인코더와 CATS 분류기를 결합한 최종 하이브리드 모델입니다."""
-    def __init__(self, encoder, cross_attention, classifier):
+    def __init__(self, encoder, decoder, classifier):
         super().__init__()
         self.encoder = encoder
-        self.cross_attention = cross_attention
+        self.decoder = decoder
         self.classifier = classifier
         
     def forward(self, x):
         # 1. 인코딩: 2D 이미지 -> 패치 시퀀스
         x = self.encoder(x)
         # 2. 크로스-어텐션: 패치 시퀀스 -> 특징 벡터
-        x = self.cross_attention(x)
+        x = self.decoder(x)
         # 3. 분류: 특징 벡터 -> 클래스 로짓
         out = self.classifier(x)
         return out
@@ -189,14 +189,14 @@ def log_model_parameters(model):
         return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
     encoder_params = count_parameters(model.encoder)
-    cross_attention_params = count_parameters(model.cross_attention)
+    decoder_params = count_parameters(model.decoder)
     classifier_params = count_parameters(model.classifier)
-    total_params = encoder_params + cross_attention_params + classifier_params
+    total_params = encoder_params + decoder_params + classifier_params
 
     logging.info("="*50)
     logging.info("모델 파라미터 수:")
     logging.info(f"  - Encoder (PatchConvEncoder): {encoder_params:,} 개")
-    logging.info(f"  - CrossAttention (CATS_Model):{cross_attention_params:,} 개")
+    logging.info(f"  - Decoder (CatsDecoder):      {decoder_params:,} 개")
     logging.info(f"  - Classifier (Linear Head):   {classifier_params:,} 개")
     logging.info(f"  - 총 파라미터:                  {total_params:,} 개")
     logging.info("="*50)
@@ -456,6 +456,7 @@ if __name__ == '__main__':
         'emb_dim': cats_cfg.emb_dim,
         'd_ff': cats_cfg.emb_dim * cats_cfg.d_ff_ratio,
         'n_heads': cats_cfg.n_heads,
+        'featured_patch_dim': cats_cfg.featured_patch_dim,
         'dropout': cats_cfg.dropout,
         'positional_encoding': cats_cfg.positional_encoding,
         'store_attn': cats_cfg.store_attn,
@@ -476,12 +477,12 @@ if __name__ == '__main__':
 
     encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
                                featured_patch_dim=cats_cfg.featured_patch_dim, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
-    cross_attention = CATS_Model(args=cats_args) # CATS.py의 Model 클래스
+    decoder = CatsDecoder(args=cats_args) # CATS.py의 Model 클래스
     
     num_decoder_patches = (num_labels + cats_cfg.featured_patch_dim - 1) // cats_cfg.featured_patch_dim
     classifier = Classifier(num_decoder_patches=num_decoder_patches, 
                             featured_patch_dim=cats_cfg.featured_patch_dim, num_labels=num_labels, dropout=cats_cfg.dropout)
-    model = HybridModel(encoder, cross_attention, classifier).to(device)
+    model = HybridModel(encoder, decoder, classifier).to(device)
 
     # 모델 생성 후 파라미터 수 로깅
     log_model_parameters(model)
