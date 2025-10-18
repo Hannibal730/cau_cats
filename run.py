@@ -2,12 +2,15 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, models, transforms
-from torch.utils.data import DataLoader, Subset
+from torchvision import models, transforms
+from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.metrics import precision_score, recall_score, f1_score
 from types import SimpleNamespace
 import numpy as np
+import pandas as pd
+from PIL import Image
+
 import argparse
 import yaml
 import logging
@@ -303,11 +306,35 @@ def inference(args, model, data_loader, device, mode_name="추론"):
 # =============================================================================
 # 4. 데이터 준비 함수
 # =============================================================================
+class CustomImageDataset(Dataset):
+    """CSV 파일과 이미지 폴더 경로를 받아 데이터를 로드하는 커스텀 데이터셋입니다."""
+    def __init__(self, csv_file, img_dir, transform=None):
+        self.img_labels = pd.read_csv(csv_file)
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.img_labels)
+
+    def __getitem__(self, idx):
+        img_name = self.img_labels.iloc[idx, 0]
+        img_path = os.path.join(self.img_dir, img_name)
+        
+        image = Image.open(img_path).convert("RGB")
+        
+        if self.transform:
+            image = self.transform(image)
+
+        label = int(self.img_labels.iloc[idx, 1])
+        return image, label
+
 def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
     """데이터셋을 로드하고 전처리하여 DataLoader를 생성합니다."""
     normalize = transforms.Normalize(mean=[0.5]*model_cfg.in_channels, std=[0.5]*model_cfg.in_channels)
     
     train_transform = transforms.Compose([
+        transforms.Resize((model_cfg.img_size, model_cfg.img_size)),
+        # 데이터 증강을 통해 모델 성능 향상 및 과적합 방지
         transforms.Resize((int(model_cfg.img_size*1.1), int(model_cfg.img_size*1.1))),
         transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
         transforms.RandomResizedCrop(model_cfg.img_size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
@@ -324,29 +351,29 @@ def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
         normalize
     ])
     
-    # 데이터 분할 로직 대신, 각 폴더를 직접 로드
     try:
         logging.info("데이터 로드를 시작합니다.")
 
-        # 전체 데이터셋 로드
-        full_train_dataset = datasets.ImageFolder(root=run_cfg.train_dir, transform=train_transform)
-        full_valid_dataset = datasets.ImageFolder(root=run_cfg.valid_dir, transform=valid_test_transform)
-        full_test_dataset = datasets.ImageFolder(root=run_cfg.test_dir, transform=valid_test_transform)
+        # 커스텀 데이터셋 사용
+        full_train_dataset = CustomImageDataset(csv_file=run_cfg.train_csv, img_dir=run_cfg.train_img_dir, transform=train_transform)
+        full_valid_dataset = CustomImageDataset(csv_file=run_cfg.valid_csv, img_dir=run_cfg.valid_img_dir, transform=valid_test_transform)
+        full_test_dataset = CustomImageDataset(csv_file=run_cfg.test_csv, img_dir=run_cfg.test_img_dir, transform=valid_test_transform)
 
-        num_labels = len(full_train_dataset.classes)
-        # 클래스 이름이 모든 데이터셋에서 동일한지 확인 (선택적)
-        assert full_train_dataset.classes == full_valid_dataset.classes == full_test_dataset.classes, "Train/Valid/Test의 클래스가 일치하지 않습니다."
+        num_labels = 2 # 0과 1의 이진 분류
+        class_names = ['Normal', 'Defect']
 
         # --- 데이터 샘플링 로직 ---
         sampling_ratio = getattr(run_cfg, 'sampling_ratio', 1.0)
         if sampling_ratio < 1.0:
-            logging.info(f"데이터셋을 {sampling_ratio * 100:.0f}% 비율로 샘플링합니다 (random_state={run_cfg.random_state}).")
+            logging.info(f"데이터셋을 {sampling_ratio * 100:.0f}% 비율로 샘플링합니다 (random_seed={run_cfg.random_seed}).")
             
             def get_subset(dataset):
-                targets = [s[1] for s in dataset.samples]
-                splitter = StratifiedShuffleSplit(n_splits=1, train_size=sampling_ratio, random_state=run_cfg.random_state)
-                subset_indices, _ = next(splitter.split(np.zeros(len(targets)), targets))
-                return Subset(dataset, subset_indices)
+                """데이터셋에서 지정된 비율만큼 단순 랜덤 샘플링을 수행합니다."""
+                num_total = len(dataset)
+                num_to_sample = int(num_total * sampling_ratio)
+                rng = np.random.default_rng(run_cfg.random_seed) # 재현성을 위한 랜덤 생성기
+                indices = rng.choice(num_total, size=num_to_sample, replace=False)
+                return Subset(dataset, indices)
 
             train_dataset = get_subset(full_train_dataset)
             valid_dataset = get_subset(full_valid_dataset)
@@ -364,10 +391,10 @@ def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
         
         logging.info(f"훈련 데이터: {len(train_dataset)}개, 검증 데이터: {len(valid_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
         
-        return train_loader, valid_loader, test_loader, num_labels, full_train_dataset.classes
+        return train_loader, valid_loader, test_loader, num_labels, class_names
         
     except FileNotFoundError:
-        logging.error(f"데이터 폴더를 찾을 수 없습니다. 'train_dir', 'valid_dir', 'test_dir' 경로를 확인해주세요.")
+        logging.error(f"데이터 폴더 또는 CSV 파일을 찾을 수 없습니다. 'run.yaml'의 경로 설정을 확인해주세요.")
         exit()
 
 
