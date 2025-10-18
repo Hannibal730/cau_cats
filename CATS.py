@@ -105,8 +105,8 @@ class Learnable_Query_Embedding(nn.Module):
         # `nn.Module`의 생성자를 호출합니다.
         
         # --- 입력 인코딩 ---
-        self.W_P = nn.Linear(featured_patch_dim, emb_dim)      
-        # 입력 패치(`featured_patch_dim` 차원)를 모델의 은닉 상태 차원(`emb_dim`)으로 변환하는 선형 레이어(가중치 `W_P`)를 정의합니다.
+        self.W_feat2emb = nn.Linear(featured_patch_dim, emb_dim)      
+        # 입력 패치(`featured_patch_dim` 차원)를 모델의 은닉 상태 차원(`emb_dim`)으로 변환하는 선형 레이어(가중치 `W_feat2emb`)를 정의합니다.
         self.dropout = nn.Dropout(dropout)
         # 일반적인 드롭아웃 레이어를 정의합니다.
 
@@ -136,7 +136,7 @@ class Learnable_Query_Embedding(nn.Module):
         bs = x.shape[0]
 
         # --- 1. 디코더에 입력할 입력 시퀀스 준비 (Key, Value) ---
-        x = self.W_P(x)
+        x = self.W_feat2emb(x)
         if self.use_positional_encoding:
             x = x + self.PE
         # x shape: [B, num_encoder_patches, emb_dim]
@@ -145,8 +145,8 @@ class Learnable_Query_Embedding(nn.Module):
         # 인코딩된 입력 패치에 드롭아웃을 적용합니다.
          
         # --- 2. 디코더에 입력할 학습 가능한 쿼리 준비 (Query) ---
-        learnable_queries = self.W_P(self.learnable_queries)
-        # 학습 가능한 쿼리 `learnable_queries` 또한 동일한 선형 레이어 `W_P`로 임베딩합니다.
+        learnable_queries = self.W_feat2emb(self.learnable_queries)
+        # 학습 가능한 쿼리 `learnable_queries` 또한 동일한 선형 레이어 `W_feat2emb`로 임베딩합니다.
         
         seq_decoder_patches = learnable_queries.unsqueeze(0).repeat(bs, 1, 1)           
         # 공유된 쿼리를 배치 내 모든 샘플에 대해 동일하게 복제합니다.
@@ -181,7 +181,7 @@ class Projection(nn.Module):
         # flatten을 적용하여 마지막 두 차원을 하나로 합칩니다.
         # [B, num_decoder_patches, D] -> [B, num_decoder_patches * D]
         x = self.flatten(x)
-        return x.unsqueeze(1) # Classifier와 호환되도록 [B, 1, L*D] 형태로 만듭니다.
+        return x # [B, num_decoder_patches * featured_patch_dim] 형태의 2D 텐서를 반환합니다.
             
 # 여러 개의 디코더 레이어로 구성된 트랜스포머 디코더 클래스입니다.
 class Decoder(nn.Module):

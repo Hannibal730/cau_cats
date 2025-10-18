@@ -152,14 +152,12 @@ class Classifier(nn.Module):
     """CATS 모델의 출력을 받아 최종 클래스 로짓으로 매핑하는 분류기입니다."""
     def __init__(self, num_decoder_patches, featured_patch_dim, num_labels, dropout):
         super().__init__()
-        self.flatten = nn.Flatten(start_dim=1)
         self.dropout = nn.Dropout(dropout)
         # CATS 출력 특징 벡터를 최종 클래스 수로 매핑하는 선형 레이어
         self.projection = nn.Linear(num_decoder_patches * featured_patch_dim, num_labels)
 
     def forward(self, x):
-        # x shape: [B, C, pred_patch_num * featured_patch_dim]
-        x = self.flatten(x) # -> [B, C * pred_patch_num * featured_patch_dim]
+        # x shape: [B, num_decoder_patches * featured_patch_dim]
         x = self.dropout(x)
         x = self.projection(x) # -> [B, num_labels]
         return x
