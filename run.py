@@ -301,11 +301,59 @@ def inference(args, model, test_loader, device):
     evaluate(model, test_loader, device)
 
 # =============================================================================
-# 4. 메인 실행 블록
+# 4. 데이터 준비 함수
+# =============================================================================
+def prepare_data(run_cfg, train_cfg, model_cfg):
+    """데이터셋을 로드하고 전처리하여 DataLoader를 생성합니다."""
+    normalize = transforms.Normalize(mean=[0.5]*model_cfg.in_channels, std=[0.5]*model_cfg.in_channels)
+    
+    train_transform = transforms.Compose([
+        transforms.Resize((int(model_cfg.img_size*1.1), int(model_cfg.img_size*1.1))),
+        transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
+        transforms.RandomResizedCrop(model_cfg.img_size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.Grayscale(num_output_channels=model_cfg.in_channels),
+        transforms.ToTensor(),
+        normalize
+    ])
+
+    test_transform = transforms.Compose([
+        transforms.Resize((model_cfg.img_size, model_cfg.img_size)),
+        transforms.Grayscale(num_output_channels=model_cfg.in_channels),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    try:
+        base_dataset = datasets.ImageFolder(root=run_cfg.data_dir)
+        targets = base_dataset.targets
+        num_labels = len(base_dataset.classes)
+        
+        splitter = StratifiedShuffleSplit(n_splits=1, test_size=run_cfg.test_split_ratio, random_state=run_cfg.random_state)
+        train_idx, test_idx = next(splitter.split(range(len(targets)), targets))
+
+        train_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=train_transform), train_idx)
+        test_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=test_transform), test_idx)
+
+        train_loader = DataLoader(train_dataset, batch_size=train_cfg.batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=train_cfg.batch_size, shuffle=False)
+        
+        logging.info(f"데이터 로드를 시작합니다.")
+        logging.info(f"훈련 데이터: {len(train_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
+        
+        return train_loader, test_loader, num_labels
+        
+    except FileNotFoundError:
+        logging.error(f"데이터 폴더 '{run_cfg.data_dir}'를 찾을 수 없습니다. 경로를 확인해주세요.")
+        exit()
+
+
+# =============================================================================
+# 5. 메인 실행 블록
 # =============================================================================
 if __name__ == '__main__':
     # --- YAML 설정 파일 로드 ---
-    parser = argparse.ArgumentParser(description="YAML 설정 파일을 이용한 CATS 기반 이미지 분류기")
+    parser = argparse.ArgumentParser(description="YAML 설정을 이용한 CATS 기반 이미지 분류기")
     parser.add_argument('--config', type=str, default='run.yaml', help='설정 파일 경로')
     args = parser.parse_args()
 
@@ -331,46 +379,9 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- 데이터 준비 ---
-    normalize = transforms.Normalize(mean=[0.5]*model_cfg.in_channels, std=[0.5]*model_cfg.in_channels)
-    
-    train_transform = transforms.Compose([
-        transforms.Resize((int(model_cfg.img_size*1.1), int(model_cfg.img_size*1.1))),
-        transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-        transforms.RandomResizedCrop(model_cfg.img_size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.Grayscale(num_output_channels=model_cfg.in_channels),
-        transforms.ToTensor(),
-        normalize
-    ])
-
-    test_transform = transforms.Compose([
-        transforms.Resize((model_cfg.img_size, model_cfg.img_size)),
-        transforms.Grayscale(num_output_channels=model_cfg.in_channels),
-        transforms.ToTensor(),
-        normalize
-    ])
-    
-    try:
-        base_dataset = datasets.ImageFolder(root=run_cfg.data_dir)
-        targets = base_dataset.targets
-        
-        splitter = StratifiedShuffleSplit(n_splits=1, test_size=run_cfg.test_split_ratio, random_state=run_cfg.random_state)
-        train_idx, test_idx = next(splitter.split(range(len(targets)), targets))
-
-        train_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=train_transform), train_idx)
-        test_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=test_transform), test_idx)
-
-        train_loader = DataLoader(train_dataset, batch_size=train_cfg.batch_size, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=train_cfg.batch_size, shuffle=False)
-        logging.info(f"데이터 로드를 시작합니다.")
-        logging.info(f"훈련 데이터: {len(train_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
-    except FileNotFoundError:
-        logging.error(f"데이터 폴더 '{run_cfg.data_dir}'를 찾을 수 없습니다. 경로를 확인해주세요.")
-        exit()
+    train_loader, test_loader, num_labels = prepare_data(run_cfg, train_cfg, model_cfg)
 
     # --- 모델 구성 ---
-    num_labels = len(base_dataset.classes)
-    
     patch_num = (model_cfg.img_size // model_cfg.patch_size) ** 2
     seq_len = patch_num * cats_cfg.featured_patch_channel
     
