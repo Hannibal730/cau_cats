@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 
 # CATS 모델 아키텍처 임포트
-from CATS import Model as CATS_Model
+from CATS import Classifier as CATS_Model
 
 # =============================================================================
 # 1. 로깅 설정
@@ -121,19 +121,21 @@ class CnnFeatureExtractor(nn.Module):
 
 class PatchConvEncoder(nn.Module):
     """이미지를 패치로 나누고, 각 패치에서 특징을 추출하여 1D 시퀀스로 변환하는 인코더입니다."""
-    def __init__(self, in_channels, img_size, patch_size, hidden_dim, cnn_feature_extractor_name, output_dim=None):
+    def __init__(self, in_channels, img_size, patch_size, featured_patch_dim, cnn_feature_extractor_name, output_dim=None):
         super(PatchConvEncoder, self).__init__()
         self.patch_size = patch_size
-        self.hidden_dim = hidden_dim
+        self.featured_patch_dim = featured_patch_dim
         self.num_patches = (img_size // patch_size) ** 2
         
         self.shared_conv = nn.Sequential(
-            CnnFeatureExtractor(cnn_feature_extractor_name=cnn_feature_extractor_name, pretrained=True, in_channels=in_channels, out_channels=hidden_dim),
-            nn.AdaptiveAvgPool2d((1, 1))
+            CnnFeatureExtractor(cnn_feature_extractor_name=cnn_feature_extractor_name, pretrained=True, in_channels=in_channels, out_channels=featured_patch_dim),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(start_dim=1) # [B*N, D, 1, 1] -> [B*N, D]
         )
+        self.norm = nn.LayerNorm(featured_patch_dim)
 
         if output_dim is not None:
-            self.proj = nn.Linear(self.num_patches * hidden_dim, output_dim)
+            self.proj = nn.Linear(self.num_patches * featured_patch_dim, output_dim)
         else:
             self.proj = None
 
@@ -144,8 +146,10 @@ class PatchConvEncoder(nn.Module):
         
         conv_outs = self.shared_conv(patches)
         conv_outs = conv_outs.view(conv_outs.size(0), -1)
-        
-        conv_outs = conv_outs.view(B, self.num_patches * self.hidden_dim)
+        # 각 패치 특징 벡터에 대해 Layer Normalization 적용
+        conv_outs = self.norm(conv_outs)
+        # CATS 모델에 입력하기 위해 [B, num_patches, dim] 형태로 재구성
+        conv_outs = conv_outs.view(B, self.num_patches, self.featured_patch_dim)
         
         if self.proj is not None:
             conv_outs = self.proj(conv_outs)
@@ -161,9 +165,9 @@ class HybridModel(torch.nn.Module):
         
     def forward(self, x):
         # 1. 인코딩: 2D 이미지 -> 1D 시퀀스
-        x = self.encoder(x).unsqueeze(-1)
+        x = self.encoder(x)
         # 2. 분류: 1D 시퀀스 -> 클래스 로짓
-        out = self.classifier(x).squeeze(-1)
+        out = self.classifier(x)
         return out
 
 # =============================================================================
@@ -434,7 +438,7 @@ if __name__ == '__main__':
 
     # --- 모델 구성 ---
     patch_num = (model_cfg.img_size // model_cfg.patch_size) ** 2 # 16
-    seq_len = patch_num * cats_cfg.featured_patch_channel
+    seq_len = patch_num * cats_cfg.featured_patch_dim
     
     cats_params = {
         'seq_len': seq_len, 'pred_len': num_labels, 'd_layers': cats_cfg.d_layers,
@@ -442,10 +446,10 @@ if __name__ == '__main__':
         'd_model': cats_cfg.emb_dim,
         'd_ff': cats_cfg.emb_dim * cats_cfg.d_ff_ratio,
         'n_heads': cats_cfg.n_heads,
-        'patch_len': cats_cfg.featured_patch_channel,
-        'stride': cats_cfg.featured_patch_channel,
-        'classification': cats_cfg.classification,
+        'patch_len': cats_cfg.featured_patch_dim,
+        'stride': cats_cfg.featured_patch_dim,
         'dropout': cats_cfg.dropout,
+        'positional_encoding': cats_cfg.positional_encoding,
         'channel_independence': cats_cfg.channel_independence,
         'padding_patch': cats_cfg.padding_patch,
         'store_attn': cats_cfg.store_attn,
@@ -465,8 +469,8 @@ if __name__ == '__main__':
     )
 
     encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
-                               hidden_dim=cats_cfg.featured_patch_channel, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
-    classifier = CATS_Model(args=cats_args)
+                               featured_patch_dim=cats_cfg.featured_patch_dim, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
+    classifier = CATS_Model(args=cats_args) # CATS.py의 Classifier 클래스
     model = HybridModel(encoder, classifier).to(device)
 
     # 모델 생성 후 파라미터 수 로깅
