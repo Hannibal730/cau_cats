@@ -215,7 +215,7 @@ def evaluate(model, test_loader, device):
     logging.info(f'Test Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
     return f1
 
-def train(args, model, train_loader, valid_loader, device):
+def train(args, model, train_loader, test_loader, device):
     """모델 훈련 및 평가를 수행하고 최고 성능 모델을 저장합니다."""
     logging.info("훈련 모드를 시작합니다.")
     
@@ -253,7 +253,7 @@ def train(args, model, train_loader, valid_loader, device):
         logging.info(f'Epoch [{epoch+1}/{args.epochs}], Loss: {running_loss/len(train_loader):.4f}, Train Accuracy: {train_acc:.2f}%')
         
         # --- 평가 단계 ---
-        f1 = evaluate(model, valid_loader, device)
+        f1 = evaluate(model, test_loader, device)
         
         # 최고 성능 모델 저장
         if f1 > best_f1:
@@ -261,12 +261,12 @@ def train(args, model, train_loader, valid_loader, device):
             torch.save(model.state_dict(), model_path)
             logging.info(f"최고 성능 모델 저장 완료 (F1 Score: {best_f1:.4f}) -> '{model_path}'")
 
-def inference(args, model, data_loader, device, mode_name="추론"):
+def inference(args, model, test_loader, device):
     """저장된 모델을 불러와 추론 시 GPU 메모리 사용량을 측정하고, 테스트셋 성능을 평가합니다."""
-    logging.info(f"{mode_name} 모드를 시작합니다.")
+    logging.info("추론 모드를 시작합니다.")
     
     data_dir_name = os.path.basename(os.path.normpath(args.data_dir))
-    model_path = os.path.join("checkpoints", "Sewer-ML", args.model_path) # 경로를 데이터셋에 맞게 고정하거나 동적으로 생성
+    model_path = os.path.join("checkpoints", data_dir_name, args.model_path)
     if not os.path.exists(model_path):
         logging.error(f"모델 파일('{model_path}')을 찾을 수 없습니다. 먼저 훈련을 실행하세요.")
         return
@@ -298,12 +298,12 @@ def inference(args, model, data_loader, device, mode_name="추론"):
         logging.info("CUDA를 사용할 수 없어 GPU 메모리 사용량을 측정할 수 없습니다.")
 
     # 2. 테스트셋 성능 평가
-    evaluate(model, data_loader, device)
+    evaluate(model, test_loader, device)
 
 # =============================================================================
 # 4. 데이터 준비 함수
 # =============================================================================
-def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
+def prepare_data(run_cfg, train_cfg, model_cfg):
     """데이터셋을 로드하고 전처리하여 DataLoader를 생성합니다."""
     normalize = transforms.Normalize(mean=[0.5]*model_cfg.in_channels, std=[0.5]*model_cfg.in_channels)
     
@@ -317,57 +317,34 @@ def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
         normalize
     ])
 
-    valid_test_transform = transforms.Compose([
+    test_transform = transforms.Compose([
         transforms.Resize((model_cfg.img_size, model_cfg.img_size)),
         transforms.Grayscale(num_output_channels=model_cfg.in_channels),
         transforms.ToTensor(),
         normalize
     ])
     
-    # 데이터 분할 로직 대신, 각 폴더를 직접 로드
     try:
-        logging.info("데이터 로드를 시작합니다.")
+        base_dataset = datasets.ImageFolder(root=run_cfg.data_dir)
+        targets = base_dataset.targets
+        num_labels = len(base_dataset.classes)
+        
+        splitter = StratifiedShuffleSplit(n_splits=1, test_size=run_cfg.test_split_ratio, random_state=run_cfg.random_state)
+        train_idx, test_idx = next(splitter.split(range(len(targets)), targets))
 
-        # 전체 데이터셋 로드
-        full_train_dataset = datasets.ImageFolder(root=run_cfg.train_dir, transform=train_transform)
-        full_valid_dataset = datasets.ImageFolder(root=run_cfg.valid_dir, transform=valid_test_transform)
-        full_test_dataset = datasets.ImageFolder(root=run_cfg.test_dir, transform=valid_test_transform)
+        train_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=train_transform), train_idx)
+        test_dataset = Subset(datasets.ImageFolder(root=run_cfg.data_dir, transform=test_transform), test_idx)
 
-        num_labels = len(full_train_dataset.classes)
-        # 클래스 이름이 모든 데이터셋에서 동일한지 확인 (선택적)
-        assert full_train_dataset.classes == full_valid_dataset.classes == full_test_dataset.classes, "Train/Valid/Test의 클래스가 일치하지 않습니다."
-
-        # --- 데이터 샘플링 로직 ---
-        sampling_ratio = getattr(run_cfg, 'sampling_ratio', 1.0)
-        if sampling_ratio < 1.0:
-            logging.info(f"데이터셋을 {sampling_ratio * 100:.0f}% 비율로 샘플링합니다 (random_state={run_cfg.random_state}).")
-            
-            def get_subset(dataset):
-                targets = [s[1] for s in dataset.samples]
-                splitter = StratifiedShuffleSplit(n_splits=1, train_size=sampling_ratio, random_state=run_cfg.random_state)
-                subset_indices, _ = next(splitter.split(np.zeros(len(targets)), targets))
-                return Subset(dataset, subset_indices)
-
-            train_dataset = get_subset(full_train_dataset)
-            valid_dataset = get_subset(full_valid_dataset)
-            test_dataset = get_subset(full_test_dataset)
-        else:
-            logging.info("전체 데이터셋을 사용합니다 (sampling_ratio=1.0).")
-            train_dataset = full_train_dataset
-            valid_dataset = full_valid_dataset
-            test_dataset = full_test_dataset
-
-        # DataLoader 생성
         train_loader = DataLoader(train_dataset, batch_size=train_cfg.batch_size, shuffle=True)
-        valid_loader = DataLoader(valid_dataset, batch_size=train_cfg.batch_size, shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=train_cfg.batch_size, shuffle=False)
         
-        logging.info(f"훈련 데이터: {len(train_dataset)}개, 검증 데이터: {len(valid_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
+        logging.info(f"데이터 로드를 시작합니다.")
+        logging.info(f"훈련 데이터: {len(train_dataset)}개, 테스트 데이터: {len(test_dataset)}개")
         
-        return train_loader, valid_loader, test_loader, num_labels, full_train_dataset.classes
+        return train_loader, test_loader, num_labels
         
     except FileNotFoundError:
-        logging.error(f"데이터 폴더를 찾을 수 없습니다. 'train_dir', 'valid_dir', 'test_dir' 경로를 확인해주세요.")
+        logging.error(f"데이터 폴더 '{run_cfg.data_dir}'를 찾을 수 없습니다. 경로를 확인해주세요.")
         exit()
 
 
@@ -389,8 +366,7 @@ if __name__ == '__main__':
     model_cfg = SimpleNamespace(**config['model'])
     cats_cfg = SimpleNamespace(**model_cfg.cats)
 
-    # 로그 폴더 이름을 'Sewer-ML'과 같이 명시적으로 지정
-    setup_logging("Sewer-ML")
+    setup_logging(run_cfg.data_dir)
     
     # --- 설정 파일 내용 로깅 ---
     config_str = yaml.dump(config, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -403,10 +379,10 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # --- 데이터 준비 ---
-    train_loader, valid_loader, test_loader, num_labels, class_names = prepare_data(run_cfg, train_cfg, model_cfg, "Sewer-ML")
+    train_loader, test_loader, num_labels = prepare_data(run_cfg, train_cfg, model_cfg)
 
     # --- 모델 구성 ---
-    patch_num = (model_cfg.img_size // model_cfg.patch_size) ** 2 # 16
+    patch_num = (model_cfg.img_size // model_cfg.patch_size) ** 2
     seq_len = patch_num * cats_cfg.featured_patch_channel
     
     cats_params = {
@@ -429,10 +405,7 @@ if __name__ == '__main__':
 
     # cli_args 대신 설정 파일 값들을 전달 (추론 시 사용)
     cli_args = SimpleNamespace(
-        mode=run_cfg.mode, 
-        # data_dir은 이제 여러 개이므로 대표 이름으로 설정
-        data_dir="Sewer-ML", 
-        batch_size=train_cfg.batch_size,
+        mode=run_cfg.mode, data_dir=run_cfg.data_dir, batch_size=train_cfg.batch_size,
         epochs=train_cfg.epochs, lr=train_cfg.lr, model_path=run_cfg.model_path,
         img_size=model_cfg.img_size, in_channels=model_cfg.in_channels
     )
@@ -447,13 +420,9 @@ if __name__ == '__main__':
     
     # --- 모드에 따라 실행 ---
     if run_cfg.mode == 'train':
-        # 훈련 시에는 train_loader와 valid_loader 사용
-        train(cli_args, model, train_loader, valid_loader, device)
+        train(cli_args, model, train_loader, test_loader, device)
         
         logging.info("="*50)
-        logging.info("훈련 완료. 최종 모델 성능을 테스트 세트로 평가합니다.")
-        # 훈련 종료 후, 최종 평가를 위해 test_loader 사용.
-        inference(cli_args, model, test_loader, device, mode_name="Final Evaluation")
+        inference(cli_args, model, test_loader, device)
     elif run_cfg.mode == 'inference':
-        # 추론 모드에서는 test_loader를 사용해 성능 평가
-        inference(cli_args, model, test_loader, device, mode_name="Inference")
+        inference(cli_args, model, test_loader, device)
