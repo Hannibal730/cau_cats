@@ -138,8 +138,8 @@ class PatchConvEncoder(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
-        # patches.shape: [B, C, num_patches_h, num_patches_w, patch_size, patch_size]
-        patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(-1, C, self.patch_size, self.patch_size)
+        # .contiguous()를 추가하여 메모리 연속성을 보장한 후 reshape 수행
+        patches = patches.permute(0, 2, 3, 1, 4, 5).contiguous().view(-1, C, self.patch_size, self.patch_size)
         # patches.shape: [B * num_patches, C, patch_size, patch_size]
         
         conv_outs = self.shared_conv(patches)
@@ -202,19 +202,19 @@ def log_model_parameters(model):
     logging.info(f"  - 총 파라미터:                  {total_params:,} 개")
     logging.info("="*50)
 
-def evaluate(model, data_loader, device, desc="Evaluating"):
+def evaluate(model, data_loader, device, desc="Evaluating", class_names=None):
     """모델을 평가하고 정확도, 정밀도, 재현율, F1 점수를 로깅합니다."""
     model.eval()
     correct = 0
     total = 0
     all_preds = []
     all_labels = []
-
+    
     progress_bar = tqdm(data_loader, desc=desc, leave=False)
     with torch.no_grad():
         for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
+            outputs = model(images) # [B, num_labels]
             _, predicted = torch.max(outputs.data, 1)
 
             total += labels.size(0)
@@ -232,30 +232,31 @@ def evaluate(model, data_loader, device, desc="Evaluating"):
     recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
     f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
     
-    logging.info(f'{desc} | Accuracy: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
+    logging.info(f'{desc} | Acc: {accuracy:.2f}% | Precision: {precision:.4f} | Recall: {recall:.4f} | F1 Score: {f1:.4f}')
+
     return f1
 
-def train(args, model, train_loader, valid_loader, device):
+def train(run_cfg, train_cfg, model, train_loader, valid_loader, device):
     """모델 훈련 및 평가를 수행하고 최고 성능 모델을 저장합니다."""
     logging.info("훈련 모드를 시작합니다.")
     
-    data_dir_name = os.path.basename(os.path.normpath(args.data_dir))
+    data_dir_name = os.path.basename(os.path.normpath(os.path.dirname(run_cfg.train_img_dir)))
     checkpoints_dir = os.path.join("checkpoints", data_dir_name)
     os.makedirs(checkpoints_dir, exist_ok=True)
-    model_path = os.path.join(checkpoints_dir, args.model_path)
+    model_path = os.path.join(checkpoints_dir, run_cfg.model_path)
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=train_cfg.lr)
     
     best_f1 = 0.0
 
-    for epoch in range(args.epochs):
+    for epoch in range(train_cfg.epochs):
         model.train()
         running_loss = 0.0
         correct = 0
         total = 0
         
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Training]", leave=False)
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{train_cfg.epochs} [Training]", leave=False)
         for images, labels in progress_bar:
             images, labels = images.to(device), labels.to(device)
             
@@ -274,10 +275,10 @@ def train(args, model, train_loader, valid_loader, device):
             progress_bar.set_postfix(loss=f"{loss.item():.4f}")
 
         train_acc = 100 * correct / total
-        logging.info(f'Epoch [{epoch+1}/{args.epochs}], Loss: {running_loss/len(train_loader):.4f}, Train Accuracy: {train_acc:.2f}%')
+        logging.info(f'[Train] [{epoch+1}/{train_cfg.epochs}] | Loss: {running_loss/len(train_loader):.4f} | Train Acc: {train_acc:.2f}%')
         
         # --- 평가 단계 ---
-        f1 = evaluate(model, valid_loader, device, desc=f"Epoch {epoch+1}/{args.epochs} [Validation]")
+        f1 = evaluate(model, valid_loader, device, desc=f"[Valid] [{epoch+1}/{train_cfg.epochs}]")
         
         # 최고 성능 모델 저장
         if f1 > best_f1:
@@ -285,18 +286,18 @@ def train(args, model, train_loader, valid_loader, device):
             torch.save(model.state_dict(), model_path)
             logging.info(f"최고 성능 모델 저장 완료 (F1 Score: {best_f1:.4f}) -> '{model_path}'")
 
-def inference(args, model, data_loader, device, mode_name="추론"):
+def inference(run_cfg, model_cfg, model, data_loader, device, mode_name="추론"):
     """저장된 모델을 불러와 추론 시 GPU 메모리 사용량을 측정하고, 테스트셋 성능을 평가합니다."""
     logging.info(f"{mode_name} 모드를 시작합니다.")
     
-    data_dir_name = os.path.basename(os.path.normpath(args.data_dir))
-    model_path = os.path.join("checkpoints", data_dir_name, args.model_path)
+    data_dir_name = os.path.basename(os.path.normpath(os.path.dirname(run_cfg.train_img_dir)))
+    model_path = os.path.join("checkpoints", data_dir_name, run_cfg.model_path)
     if not os.path.exists(model_path):
         logging.error(f"모델 파일('{model_path}')을 찾을 수 없습니다. 먼저 훈련을 실행하세요.")
         return
 
     try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         logging.info(f"'{model_path}' 가중치 로드 완료.")
     except Exception as e:
         logging.error(f"모델 가중치 로딩 중 오류 발생: {e}")
@@ -305,7 +306,7 @@ def inference(args, model, data_loader, device, mode_name="추론"):
     model.eval()
     
     # 1. GPU 메모리 사용량 측정
-    dummy_input = torch.randn(1, args.in_channels, args.img_size, args.img_size).to(device)
+    dummy_input = torch.randn(1, model_cfg.in_channels, model_cfg.img_size, model_cfg.img_size).to(device)
     
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -322,7 +323,7 @@ def inference(args, model, data_loader, device, mode_name="추론"):
         logging.info("CUDA를 사용할 수 없어 GPU 메모리 사용량을 측정할 수 없습니다.")
 
     # 2. 테스트셋 성능 평가
-    evaluate(model, data_loader, device, desc=mode_name)
+    evaluate(model, data_loader, device, desc=f"[{mode_name}]")
 
 # =============================================================================
 # 4. 데이터 준비 함수
@@ -340,13 +341,13 @@ class CustomImageDataset(Dataset):
     def __getitem__(self, idx):
         img_name = self.img_labels.iloc[idx, 0]
         img_path = os.path.join(self.img_dir, img_name)
-        
         image = Image.open(img_path).convert("RGB")
         
         if self.transform:
             image = self.transform(image)
 
-        label = int(self.img_labels.iloc[idx, 1])
+        # 'Defect' 열의 값을 명시적으로 레이블로 사용합니다.
+        label = int(self.img_labels.loc[idx, 'Defect'])
         return image, label
 
 def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
@@ -354,9 +355,7 @@ def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
     normalize = transforms.Normalize(mean=[0.5]*model_cfg.in_channels, std=[0.5]*model_cfg.in_channels)
     
     train_transform = transforms.Compose([
-        transforms.Resize((model_cfg.img_size, model_cfg.img_size)),
         # 데이터 증강을 통해 모델 성능 향상 및 과적합 방지
-        transforms.Resize((int(model_cfg.img_size*1.1), int(model_cfg.img_size*1.1))),
         transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
         transforms.RandomResizedCrop(model_cfg.img_size, scale=(0.8, 1.0), ratio=(0.9, 1.1)),
         transforms.RandomHorizontalFlip(p=0.5),
@@ -379,6 +378,21 @@ def prepare_data(run_cfg, train_cfg, model_cfg, data_dir_name):
         full_train_dataset = CustomImageDataset(csv_file=run_cfg.train_csv, img_dir=run_cfg.train_img_dir, transform=train_transform)
         full_valid_dataset = CustomImageDataset(csv_file=run_cfg.valid_csv, img_dir=run_cfg.valid_img_dir, transform=valid_test_transform)
         full_test_dataset = CustomImageDataset(csv_file=run_cfg.test_csv, img_dir=run_cfg.test_img_dir, transform=valid_test_transform)
+
+        # ----레이블 유효성 검사 ---
+        def validate_labels(dataset, name):
+            if 'Defect' not in dataset.img_labels.columns:
+                raise ValueError(f"{name} 데이터셋의 CSV 파일에 'Defect' 열이 없습니다.")
+            labels = dataset.img_labels['Defect']
+            unique_labels = labels.unique()
+            if not all(label in [0, 1] for label in unique_labels):
+                invalid_labels = [label for label in unique_labels if label not in [0, 1]]
+                raise ValueError(f"{name} 데이터셋의 CSV 파일에 유효하지 않은 레이블이 포함되어 있습니다: {invalid_labels}. 레이블은 0 또는 1이어야 합니다.")
+        
+        validate_labels(full_train_dataset, "Train")
+        validate_labels(full_valid_dataset, "Validation")
+        validate_labels(full_test_dataset, "Test")
+        # ------
 
         num_labels = 2 # 0과 1의 이진 분류
         class_names = ['Normal', 'Defect']
@@ -437,8 +451,7 @@ if __name__ == '__main__':
     model_cfg = SimpleNamespace(**config['model'])
     cats_cfg = SimpleNamespace(**model_cfg.cats)
 
-    # 로그 폴더 이름을 'Sewer-ML'과 같이 명시적으로 지정
-    setup_logging("Sewer-ML")
+    setup_logging(os.path.basename(os.path.dirname(run_cfg.train_img_dir)))
     
     # --- 설정 파일 내용 로깅 ---
     config_str = yaml.dump(config, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -471,16 +484,6 @@ if __name__ == '__main__':
     }
     cats_args = SimpleNamespace(**cats_params)
 
-    # cli_args 대신 설정 파일 값들을 전달 (추론 시 사용)
-    cli_args = SimpleNamespace(
-        mode=run_cfg.mode, 
-        # data_dir은 이제 여러 개이므로 대표 이름으로 설정
-        data_dir="Sewer-ML", 
-        batch_size=train_cfg.batch_size,
-        epochs=train_cfg.epochs, lr=train_cfg.lr, model_path=run_cfg.model_path,
-        img_size=model_cfg.img_size, in_channels=model_cfg.in_channels
-    )
-
     encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
                                featured_patch_dim=cats_cfg.featured_patch_dim, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
     decoder = CatsDecoder(args=cats_args) # CATS.py의 Model 클래스
@@ -496,12 +499,11 @@ if __name__ == '__main__':
     # --- 모드에 따라 실행 ---
     if run_cfg.mode == 'train':
         # 훈련 시에는 train_loader와 valid_loader 사용
-        train(cli_args, model, train_loader, valid_loader, device)
+        train(run_cfg, train_cfg, model, train_loader, valid_loader, device)
         
         logging.info("="*50)
         logging.info("훈련 완료. 최종 모델 성능을 테스트 세트로 평가합니다.")
-        # 훈련 종료 후, 최종 평가를 위해 test_loader 사용.
-        inference(cli_args, model, test_loader, device, mode_name="Final Evaluation")
+        inference(run_cfg, model_cfg, model, test_loader, device, mode_name="Final Evaluation")
     elif run_cfg.mode == 'inference':
         # 추론 모드에서는 test_loader를 사용해 성능 평가
-        inference(cli_args, model, test_loader, device, mode_name="Inference")
+        inference(run_cfg, model_cfg, model, test_loader, device, mode_name="Inference")
