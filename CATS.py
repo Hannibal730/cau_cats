@@ -58,7 +58,7 @@ class Model_backbone(nn.Module):
     # 모델 백본의 생성자입니다. 모델의 구조와 하이퍼파라미터를 초기화합니다.
     def __init__(self, c_in:int, seq_len:int, pred_len:int, featured_patch_dim:int=24, stride:int=24, n_layers:int=3, d_model=128, n_heads=16, d_ff:int=256,
                  attn_dropout:float=0., dropout:float=0., res_attention:bool=True, channel_independence:bool=False, store_attn:bool=False, QAM_start:float = 0.1,
-                 QAM_end:float =0.5, padding_patch = None, **kwargs):
+                 QAM_end:float =0.5, **kwargs):
         
         super().__init__()
         # `nn.Module`의 생성자를 호출합니다.
@@ -68,8 +68,6 @@ class Model_backbone(nn.Module):
         # 입력 시계열을 나눌 각 패치의 길이를 저장합니다.
         self.stride = stride
         # 패치를 추출할 때의 보폭(stride)을 저장합니다.
-        self.padding_patch = padding_patch
-        # 패딩 전략을 저장합니다. `None` 또는 'end(시계열 데이터 맨 뒤에 추가)'가 될 수 있습니다.
         
         pred_patch_num = (pred_len+self.featured_patch_dim-1)//self.featured_patch_dim
         # 미래 예측 패치의 개수를 계산합니다. `pred_len`을 `featured_patch_dim`으로 올림 나눗셈(ceiling division)하여 구합니다.
@@ -77,13 +75,6 @@ class Model_backbone(nn.Module):
         seq_patch_num = int((seq_len - self.featured_patch_dim)/stride + 1)
         # 입력 시계열에서 생성될 과거 패치의 개수를 계산합니다. 컨볼루션 출력 크기 계산과 유사합니다.
         # N_out = floor((N_in - kernel_size) / stride + 1) 공식에 해당합니다.
-        
-        if padding_patch == 'end':
-            # 만약 'end' 패딩 전략이 사용된다면,
-            self.padding_patch_layer = nn.ReplicationPad1d((0, stride)) 
-            # 시계열의 끝부분에 `stride`만큼의 값을 복제하여 패딩하는 레이어를 추가합니다. 이는 시퀀스 길이를 유지하는 데 도움이 됩니다.
-            seq_patch_num += 1
-            # 패딩으로 인해 시퀀스 패치의 수가 하나 증가합니다.
         
         # --- 백본 모델(임베딩 및 디코더) 초기화 --- 
         self.backbone = Learnable_Query_Embedding(c_in, seq_patch_num=seq_patch_num, featured_patch_dim=self.featured_patch_dim, pred_patch_num=pred_patch_num,
@@ -110,11 +101,6 @@ class Model_backbone(nn.Module):
         z = (z - mean)/std 
         # 입력 데이터에서 평균을 빼고 표준편차로 나누어 표준 정규분포에 가깝게 정규화를 수행합니다. z_norm = (z - μ) / σ.
             
-        # --- 패치화(Patching) ---
-        if self.padding_patch == 'end':
-            # 'end' 패딩이 설정된 경우,
-            z = self.padding_patch_layer(z)
-            # 정의된 패딩 레이어를 입력에 적용합니다.
         z = z.unfold(dimension=-1, size=self.featured_patch_dim, step=self.stride)
         # `unfold` 함수를 사용하여 시계열을 지정된 `featured_patch_dim`과 `stride`에 따라 패치들로 나눕니다.
         # 결과 z의 형태: [배치 크기, 변수 수, 시퀀스 패치 수, featured_patch_dim]
@@ -500,33 +486,22 @@ class Model(nn.Module):
         channel_independence = args.channel_independence # 변수 독립성 여부
         featured_patch_dim = args.patch_len # 각 패치의 길이
         stride = args.stride             # 패치 추출 시의 보폭
-        padding_patch = args.padding_patch # 패딩 전략
         store_attn = args.store_attn     # 어텐션 가중치 저장 여부
         QAM_start = args.QAM_start       # QAM 시작 확률
         QAM_end = args.QAM_end           # QAM 끝 확률
 
         # 로드한 하이퍼파라미터들을 사용하여 `Model_backbone`을 초기화합니다. 
         self.model = Model_backbone(c_in=c_in, seq_len = seq_len, pred_len=self.pred_len, featured_patch_dim=featured_patch_dim, stride=stride, n_layers=n_layers,
-                                    d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout,independence=independence, positional_encoding=positional_encoding,
-                                    store_attn=store_attn, padding_patch = padding_patch, QAM_start=QAM_start, QAM_end=QAM_end, **kwargs)
+                                    d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout,independence=independence, positional_encoding=positional_encoding, store_attn=store_attn, QAM_start=QAM_start, QAM_end=QAM_end, **kwargs)
         
-        # 최종 출력을 위한 분류 헤드
-        pred_patch_num = (self.pred_len + featured_patch_dim - 1) // featured_patch_dim
-        self.flatten = nn.Flatten(start_dim=1)
-        self.dropout = nn.Dropout(dropout)
-        self.projection = nn.Linear(pred_patch_num * featured_patch_dim * c_in, self.pred_len)
-
     
     # 전체 모델의 순전파 로직을 정의합니다.
     def forward(self, x): # 입력 x의 일반적인 형태: [배치 크기, 입력 길이, 채널 수]
-        x = x.permute(0,2,1)
+        
         # `permute`를 사용하여 입력 텐서의 차원 순서를 CATS 모델의 입력 형식에 맞게끔 [배치, 채널, 길이]로 변경합니다.
-        x = self.model(x)
-        # 백본 모델에 입력을 통과시켜 예측을 수행합니다.
+        x = x.permute(0,2,1)
 
-        # 백본 출력을 flatten하고 분류 헤드를 통과시킵니다.
-        # x shape: [B, C, pred_patch_num * dim]
-        x = self.flatten(x) # -> [B, C * pred_patch_num * dim]
-        x = self.dropout(x)
-        x = self.projection(x) # -> [B, pred_len] (즉, num_labels)
-        return x.unsqueeze(-1) # HybridModel의 squeeze와 짝을 맞추기 위해 차원 추가
+        # 백본 모델에 입력을 통과시켜 특징 텐서를 추출합니다.
+        features = self.model(x)
+        # 결과 features의 형태: [B, C, pred_patch_num * featured_patch_dim]
+        return features

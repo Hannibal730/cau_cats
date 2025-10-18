@@ -134,11 +134,6 @@ class PatchConvEncoder(nn.Module):
         )
         self.norm = nn.LayerNorm(featured_patch_dim)
 
-        if output_dim is not None:
-            self.proj = nn.Linear(self.num_patches * featured_patch_dim, output_dim)
-        else:
-            self.proj = None
-
     def forward(self, x):
         B, C, H, W = x.shape
         patches = x.unfold(2, self.patch_size, self.patch_size).unfold(3, self.patch_size, self.patch_size)
@@ -150,23 +145,38 @@ class PatchConvEncoder(nn.Module):
         conv_outs = self.norm(conv_outs)
         # CATS 모델에 입력하기 위해 [B, num_patches, dim] 형태로 재구성
         conv_outs = conv_outs.view(B, self.num_patches, self.featured_patch_dim)
-        
-        if self.proj is not None:
-            conv_outs = self.proj(conv_outs)
-            
         return conv_outs
+
+class Classifier(nn.Module):
+    """CATS 모델의 출력을 받아 최종 클래스 로짓으로 매핑하는 분류기입니다."""
+    def __init__(self, c_in, pred_patch_num, featured_patch_dim, num_labels, dropout):
+        super().__init__()
+        self.flatten = nn.Flatten(start_dim=1)
+        self.dropout = nn.Dropout(dropout)
+        # CATS 출력 특징 벡터를 최종 클래스 수로 매핑하는 선형 레이어
+        self.projection = nn.Linear(pred_patch_num * featured_patch_dim * c_in, num_labels)
+
+    def forward(self, x):
+        # x shape: [B, C, pred_patch_num * featured_patch_dim]
+        x = self.flatten(x) # -> [B, C * pred_patch_num * featured_patch_dim]
+        x = self.dropout(x)
+        x = self.projection(x) # -> [B, num_labels]
+        return x
 
 class HybridModel(torch.nn.Module):
     """인코더와 CATS 분류기를 결합한 최종 하이브리드 모델입니다."""
-    def __init__(self, encoder, classifier):
+    def __init__(self, encoder, cross_attention, classifier):
         super().__init__()
         self.encoder = encoder
+        self.cross_attention = cross_attention
         self.classifier = classifier
         
     def forward(self, x):
-        # 1. 인코딩: 2D 이미지 -> 1D 시퀀스
+        # 1. 인코딩: 2D 이미지 -> 패치 시퀀스
         x = self.encoder(x)
-        # 2. 분류: 1D 시퀀스 -> 클래스 로짓
+        # 2. 크로스-어텐션: 패치 시퀀스 -> 특징 벡터
+        x = self.cross_attention(x)
+        # 3. 분류: 특징 벡터 -> 클래스 로짓
         out = self.classifier(x)
         return out
 
@@ -180,13 +190,15 @@ def log_model_parameters(model):
         return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
     encoder_params = count_parameters(model.encoder)
+    cross_attention_params = count_parameters(model.cross_attention)
     classifier_params = count_parameters(model.classifier)
-    total_params = encoder_params + classifier_params
+    total_params = encoder_params + cross_attention_params + classifier_params
 
     logging.info("="*50)
     logging.info("모델 파라미터 수:")
     logging.info(f"  - Encoder (PatchConvEncoder): {encoder_params:,} 개")
-    logging.info(f"  - Classifier (CATS_Model):    {classifier_params:,} 개")
+    logging.info(f"  - CrossAttention (CATS_Model):{cross_attention_params:,} 개")
+    logging.info(f"  - Classifier (Linear Head):   {classifier_params:,} 개")
     logging.info(f"  - 총 파라미터:                  {total_params:,} 개")
     logging.info("="*50)
 
@@ -451,7 +463,6 @@ if __name__ == '__main__':
         'dropout': cats_cfg.dropout,
         'positional_encoding': cats_cfg.positional_encoding,
         'channel_independence': cats_cfg.channel_independence,
-        'padding_patch': cats_cfg.padding_patch,
         'store_attn': cats_cfg.store_attn,
         'QAM_start': cats_cfg.qam['start'],
         'QAM_end': cats_cfg.qam['end'],
@@ -470,8 +481,12 @@ if __name__ == '__main__':
 
     encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
                                featured_patch_dim=cats_cfg.featured_patch_dim, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
-    classifier = CATS_Model(args=cats_args) # CATS.py의 Model 클래스
-    model = HybridModel(encoder, classifier).to(device)
+    cross_attention = CATS_Model(args=cats_args) # CATS.py의 Model 클래스
+    
+    pred_patch_num = (num_labels + cats_cfg.featured_patch_dim - 1) // cats_cfg.featured_patch_dim
+    classifier = Classifier(c_in=model_cfg.in_channels, pred_patch_num=pred_patch_num, 
+                            featured_patch_dim=cats_cfg.featured_patch_dim, num_labels=num_labels, dropout=cats_cfg.dropout)
+    model = HybridModel(encoder, cross_attention, classifier).to(device)
 
     # 모델 생성 후 파라미터 수 로깅
     log_model_parameters(model)
