@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 
 # CATS 모델 아키텍처 임포트
-from CATS import Classifier as CATS_Model
+from CATS import Model as CATS_Model
 
 # =============================================================================
 # 1. 로깅 설정
@@ -470,7 +470,7 @@ if __name__ == '__main__':
 
     encoder = PatchConvEncoder(in_channels=model_cfg.in_channels, img_size=model_cfg.img_size, patch_size=model_cfg.patch_size, 
                                featured_patch_dim=cats_cfg.featured_patch_dim, cnn_feature_extractor_name=model_cfg.cnn_feature_extractor['name'])
-    classifier = CATS_Model(args=cats_args) # CATS.py의 Classifier 클래스
+    classifier = CATS_Model(args=cats_args) # CATS.py의 Model 클래스
     model = HybridModel(encoder, classifier).to(device)
 
     # 모델 생성 후 파라미터 수 로깅
